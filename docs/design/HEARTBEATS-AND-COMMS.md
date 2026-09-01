@@ -80,23 +80,58 @@ this repo's bridge already talks to, against ruClip's **own** namespace
 tracking unrelated development spend on whatever bridge instance is
 running).
 
-**D. `agentbbs` has real, concrete MCP tools available right now;
-AgentRadio has zero implementation surface available in this environment.**
-`federation_bbs_register`/`federation_bbs_publish`/`federation_bbs_watch`/
-`federation_bbs_human_join` are real, live MCP tools with concrete input
-schemas (checked directly, §5) — `agentbbs` is an optional dependency that
-every handler gracefully degrades to `{degraded: true}` for when missing,
-matching the ADR-150 pattern already established elsewhere in this repo. By
-contrast, a repo-wide search for `radio-moe`/`AgentRadio` in the
-`ruvnet/ruflo` checkout finds only the two amendment documents this session
-itself wrote — no source, no MCP tools, and `ruvnet/autogenous` is not
-checked out anywhere on this machine (checked `/Users/cohen/Projects/*`).
-**This slice cannot ground an AgentRadio implementation in anything real**,
-so §5 designs it as an interface-only stub, and agentbbs — not AgentRadio —
-is the channel actually wired and used this slice, contrary to the
-"AgentRadio primary, agentbbs option" framing in the brief. This is
-flagged explicitly as a deviation, not silently implemented against
-fabricated AgentRadio API calls.
+**D. (Corrected 2026-09-01 — the original version of this finding was
+wrong about *availability*, right about *fit*, for the wrong reason.)**
+The original draft of this document claimed AgentRadio had "zero
+implementation surface" because a repo-wide search of the `ruvnet/ruflo`
+checkout and the MCP tool list found nothing — that check missed the npm
+registry entirely, and was wrong. **Corrected, verified by pulling the real
+tarballs (`npm pack @metaharness/radio radio-moe`, extracted and read
+`dist/index.d.ts` + `README.md` for both, not just `npm view`)**:
+`radio-moe@0.3.1` and `@metaharness/radio@0.1.0` are both real, published,
+substantial packages (134 offline tests in `radio-moe`, a dependency-free
+deterministic TypeScript implementation in `@metaharness/radio`) with real,
+readable public APIs. **However — read closely, this is the actual
+correction that matters — neither one's real API is a notification/pub-sub
+bus for the "tell a human/cockpit that something happened" job
+`NotificationChannel` (§5) needs**, and `agentbbs`'s `federation_bbs_*`
+tools remain the only verified fit for that specific job. The two packages
+solve two different, real problems instead:
+
+- **`@metaharness/radio`** (the direct AgentRadio paper implementation,
+  arXiv:2607.28430) is `RadioBus`/`Watcher`/`runProtocol` — a
+  dependency-free, **in-process, in-memory** passive-awareness bus so
+  agents *within one running pod* can send `@mention`s to each other and
+  fold them in at step boundaries **during a single task's execution**.
+  `radio-moe`'s own architecture doc places it explicitly: *"Control:
+  in-process awareness bus... **Never crosses the network**."* Its own
+  README's "Honest bounds" section states outright: *"Live LLM-pod wiring
+  is deferred to its own measured ADR."* It has no persistence and no
+  cross-process transport of its own — not a substitute for `agentbbs`'s
+  job, a genuinely different layer (intra-swarm coordination during one
+  task, not company-wide event notification).
+- **`radio-moe`** is a governed, ed25519-signed, real-time peer
+  mixture-of-experts mesh: `Gate`/`Peer`/`Mesh` route an input chunk to
+  expert peers by top-k capability match, `mixLogits`/`raceTextExperts`
+  combine their streamed outputs in the mathematically-correct regime, and
+  `ActionGate`/`admitDurableWrite` gate which action is allowed to release
+  from independently-sourced, signed support. Its real "backends" module
+  (`openRouterExpert`, `geminiExpert`, `CommandStreamingExpert` for
+  `claude`/`codex`) is genuinely the **cross-provider agent adapter** the
+  ADR-0001 amendment 7a describes — this is a real, correct match for
+  *that* claim. But it's a request-routing-and-governance mechanism for
+  picking/combining which LLM backend handles a piece of work, not a
+  notification-delivery mechanism — using `ActionGate` to deliver a
+  "heartbeat fired" event would be forcing a consensus-governance primitive
+  to do a pub/sub bus's job.
+
+**Net correction**: agentbbs remains the only verified-fit `NotificationChannel`
+backend (§5's agentbbs section is unchanged and still correct). `radio-moe`'s
+real role in ruClip is a **separate, real integration point** — routing an
+agent employee's actual work across Claude/Codex/OpenRouter/Gemini backends,
+wherever ruClip dispatches that work — noted in §5 as a concrete, grounded
+follow-on (not a stub, an actual scoped-out task) rather than the originally
+mis-scoped "wire it in as the primary comms channel."
 
 ## 1. `HeartbeatSchedule` entity
 
@@ -324,29 +359,54 @@ AgentBbsNotificationChannel implements NotificationChannel
   scoped, time-limited access to the room — not auto-called by the
   heartbeat/approval flows.
 
-### AgentRadio-backed channel (interface-only, NOT implemented — Finding D)
+### AgentRadio (`radio-moe@0.3.1` / `@metaharness/radio@0.1.0`) — real packages, wrong shape for this seam (corrected per Finding D)
 
-```
-AgentRadioNotificationChannel implements NotificationChannel
-```
+**No `AgentRadioNotificationChannel` is designed here** — not because the
+packages don't exist (they do, verified real, §0 Finding D), but because
+neither one's real, read API implements a "publish an event, a
+human/cockpit gets notified" contract. `@metaharness/radio`'s `RadioBus` is
+in-process/in-memory and explicitly never crosses the network;
+`radio-moe`'s `ActionGate`/`Mesh`/`MixtureState` govern *which LLM backend's
+output gets to release as an action*, not event delivery. Forcing either
+into `NotificationChannel`'s shape would mean either faking persistence
+`RadioBus` doesn't have, or repurposing a signed-quorum action-release gate
+as a notification bus — both wrong. `AgentBbsNotificationChannel` is the
+correct and only backend for this interface, full stop, not a stand-in
+until something better ships.
 
-Stub that returns `{ delivered: false, degraded: true }` unconditionally,
-with a comment explaining why — no fabricated API calls. Whoever wires this
-for real needs to (a) locate an actual `ruvnet/autogenous` checkout or
-published `packages/radio-moe` artifact, (b) read its real interface the
-same way this document read `claims-tools.ts`/`budget.mjs`, (c) implement
-this class against that real interface, not this stub. Tracked as an open
-item in §7.
+**`radio-moe`'s real, separate, legitimate role in ruClip**: routing an
+agent employee's actual work across Claude/Codex/OpenRouter/Gemini backends
+via `Gate`/`Peer`/`Mesh` and the real backend adapters
+(`openRouterExpert`, `geminiExpert`, `CommandStreamingExpert`) *is* the
+cross-provider agent adapter ADR-0001 amendment 7a describes — a correct
+match, just for a different integration point than comms. The natural seam
+is `fireHeartbeat`'s step 4 (§3) — "wake the assignee" for an `OrgMember` of
+`kind: 'agent'` currently just publishes a `heartbeat-fired` notification
+and assumes something downstream picks it up; a future slice could route
+that dispatch through a `radio-moe` `Mesh` instead of (or in addition to)
+the notification. **Not built this slice** — the brief scoped this slice to
+heartbeats + comms, not agent-work dispatch/routing, and conflating the two
+here would be scope creep beyond what was asked. Tracked as a concrete,
+now-correctly-grounded follow-on in §7 (not a vague "AgentRadio integration
+gap" — a specific package, a specific seam, a specific reason it wasn't
+done now).
+
+**`@metaharness/radio`'s real, separate, legitimate role in ruClip**: if a
+future slice has ruClip spawn a multi-agent swarm to work one
+heartbeat-triggered Issue collaboratively, `RadioBus`/`Watcher` is the right
+primitive for *those sub-agents'* internal step-boundary awareness during
+that one task — again, a different concern than notifying a human/cockpit
+that something happened. Also not built this slice, also tracked in §7.
 
 ### Which channel is used this slice
 
-Both implement the same `NotificationChannel` interface, so a future
-`CompositeNotificationChannel` (try AgentRadio, fall back to agentbbs) can
-be introduced without touching any call site — but for *this* slice, since
-AgentRadio has no real implementation, `AgentBbsNotificationChannel` is
-the one actually constructed and passed to `fireHeartbeat`/
-`applyApprovalTransition`. This is the deviation from the brief's
-"AgentRadio primary" framing, made explicit rather than papered over.
+`AgentBbsNotificationChannel` is the only `NotificationChannel`
+implementation this slice builds, and it is the *correct* choice — not a
+placeholder pending AgentRadio. The brief's "AgentRadio primary" framing
+was based on a category mix-up (assuming AgentRadio's job includes
+notification delivery, which its real API confirms it doesn't) rather than
+AgentRadio's unavailability — corrected here now that both packages have
+actually been read, not just found.
 
 ### Wiring into the approval gate (additive to `APPROVAL-GATE.md`)
 
@@ -392,11 +452,20 @@ this slice touches the authorization layer, and it's pure reuse.
   known open question, see below), `checkOperatingBudget` /
   `setOperatingBudget` per §4.
 - `src/control-plane/comms/agentbbs-notification-channel.ts` — real
-  implementation per §5.
-- `src/control-plane/comms/agentradio-notification-channel.ts` — stub per
-  §5.
+  implementation per §5. **No `agentradio-notification-channel.ts` this
+  slice** — §5 explains why building one would be wrong, not just
+  premature; don't add it speculatively.
 - `applyApprovalTransition` in `store/agentdb-adapter.ts` — add
   `deps.notifications` per §5's approval-gate wiring.
+- **Follow-on work, correctly scoped now (not "AgentRadio integration,"
+  two specific things)**: (1) route `fireHeartbeat`'s agent-assignee wake
+  (§3 step 4) through `radio-moe`'s `Gate`/`Mesh` and real backend adapters
+  (`openRouterExpert`/`geminiExpert`/`CommandStreamingExpert`) instead of
+  assuming a notification alone dispatches the work — this is where
+  ADR-0001 amendment 7a's "cross-provider agent adapter" claim actually
+  belongs; (2) if/when ruClip spawns a multi-agent swarm on one Issue,
+  `@metaharness/radio`'s `RadioBus`/`Watcher` for that swarm's internal
+  step-boundary awareness. Neither is this slice's job.
 - **Open question, needs resolving during implementation, not guessed
   here**: `listDueHeartbeats`'s "all active schedules with `nextFireAt <=
   now`" is a range/scan query, not an exact-key recall or a k-hop graph
