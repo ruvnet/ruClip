@@ -272,6 +272,21 @@ nightly scheduler, no new GCP cron — reuse verbatim.
      `'active'` OR `'handoff-pending'` (both mean "this actor is still the
      recorded claimant" per the design's own §4 reasoning — only
      `accept-handoff` moves the claimant, not `status` alone).
+   - **Post-delivery security fix (round 3, commit `2c08d8a`)**: Guard C's
+     `actor.status === 'active'` check, as first implemented, tested the
+     field on the caller-supplied `authorization.actor` object — not actual
+     re-verification, since a caller can set that field to anything (the
+     same trust bug the pre-`de48670` Guard A create-path had). Confirmed
+     exploitable by an independent test
+     (`tests/control-plane/authorization-trust-boundary.test.ts`): an
+     OrgMember an operator marks `'inactive'` in ruClip's own store could
+     keep deciding approvals indefinitely as long as ruflo's claims system
+     (which has no concept of `OrgMember.status`) still showed them holding
+     the claim. Fixed to recall the actual persisted `OrgMember` via
+     `recallOrgMember` and check *its* status, treating a missing record as
+     unauthorized rather than trusting the caller — matching how the
+     self-approval re-check already treated its own input. 144 tests total
+     (up from 142), `tsc --strict` clean.
    - **Still remaining**: `claims_claim` is not wired into issue
      creation/assignment (`AUTHORIZATION.md` §5 — the natural extension
      point is the existing `assigned_to` causal-edge write in
