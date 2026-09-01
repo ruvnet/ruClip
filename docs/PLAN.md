@@ -508,7 +508,7 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
    routine, first ledger rows. **Amended 2026-09-01**: rotation surface is
    codebase-only (§6) — no runtime `redblue` rotation here, that's Phase 4's
    job now.
-7. **Phase 6 (NEW, 2026-09-01, not started) — Human Employee Augmentation**
+7. **Phase 6 (NEW, 2026-09-01) — Human Employee Augmentation**
    (see §7a above for the full design): per-person adaptive coaching for
    human `OrgMember`s via calendar/email/meeting-transcript signal
    ingestion, proactive nudges through the already-built `agentbbs`
@@ -521,9 +521,82 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
    the `agentbbs`/`radio-moe`-signed notification channel — no new comms
    or learning infrastructure. Calendar/email/meeting-transcript connectors
    are external SaaS integrations, outside the ruvnet-only orchestration
-   constraint (same distinction already drawn for GCP infra in §7). Not
-   started — design (which concrete first slice, and its privacy-gate
-   details) is the next step, not code.
+   constraint (same distinction already drawn for GCP infra in §7).
+   - **Delivered this iteration (Phase 6a, `docs/design/EMPLOYEE-INTERACTION-PROFILE.md`
+     — the narrowest possible first slice, team-lead approved)**: a
+     per-human-`OrgMember` `EmployeeInteractionProfile`
+     (`schema/employee-interaction-profile.ts`) fed entirely by data ruClip
+     already legitimately holds — `ApprovalTransition` timing — with
+     **zero new external signal ingestion** and therefore no new
+     PII-ingestion surface this slice (calendar/email/meeting-transcript
+     connectors, AIDefence gating for them, and `preferredChannel`/`tone`/
+     `intrusiveness` fields remain unbuilt, correctly deferred to a slice
+     that has a real free-text/external signal to gate). Two privacy
+     constraints were load-bearing from the start, not bolted on: **opt-in**
+     (`setInteractionProfileConsent` — self-service only, hard-rejects any
+     `actor.id !== orgMemberId`, no proxy/admin override exists as a code
+     path; rejects a `kind !== 'human'` target; replaces rather than merges
+     `consentedSignalTypes`, so withdrawing consent is the same code path
+     as granting it) and **access control by function shape, not runtime
+     check** — `recallOwnInteractionProfile(actor)` has no `orgMemberId`
+     parameter separate from `actor.id`, and
+     `recallInteractionProfileForComposition(companyId, orgMemberId)` has
+     no `actor`/requester parameter at all; no function anywhere takes
+     `(requestingActor, targetOrgMemberId)` as two independent parameters,
+     locked down by a dedicated arity-based structural test so a future
+     refactor can't quietly reintroduce that shape.
+     `recomputeInteractionSignals` pairs each actor's approve/reject
+     `ApprovalTransition` with the immediately-prior submit transition for
+     the same `issueId` to derive a latency sample, recomputing
+     `medianDecisionLatencySeconds` and a 24-bucket `decisionHourHistogram`
+     fresh each call (not incrementally). `applyApprovalTransition` gained
+     `deps.interactionLearning?: boolean` (default `false`/omitted, same
+     non-blocking best-effort contract `deps.notifications` already has —
+     a failure here never fails the approval decision). Storage:
+     `memory_store`/`memory_retrieve` (not `agentdb_hierarchical-store` —
+     see the grounding correction below) in a new, deliberately separate
+     `ruclip-employee-profiles` namespace, `provenance_type:
+     'system_observation'` (ADR-323). 195 tests total (up from 177),
+     `tsc --strict` clean.
+   - **One grounding correction made before any code was written** (same
+     discipline as every prior slice): the amendment's "SONA + AgentDB
+     pattern-store" reads naturally as the `ruvllm_sona_*` MCP tools, but
+     those are local-model weight-adaptation with unconfirmed cross-session
+     persistence from the schema alone — the same unverified-durability
+     trap `CronCreate` turned out to be in `HEARTBEATS-AND-COMMS.md` §0
+     Finding B. The durable per-person record uses `memory_store`/
+     `memory_retrieve` instead (already proven reliable —
+     `checkOperatingBudget`'s confirmed `upsert: true`), and its real
+     `provenance_type` parameter genuinely **is** ADR-323's mechanism, not
+     a guess. `ruvllm_sona_*` remains a real, correctly-scoped *future*
+     option for personalizing generated message *text* once a slice has
+     text to personalize — explicitly not used for storage.
+   - **One new function beyond the design doc's own file list**:
+     `listApprovalTransitionsForCompany` in `store/agentdb-adapter.ts` — a
+     broad, client-side-filtered scan (same "list broadly, filter
+     client-side" pattern `listDueHeartbeats` already established), needed
+     because the median-latency pairing requires each actor's decision
+     transition to be matched against the submit transition for the SAME
+     issue, which may belong to a *different* actor — so a query scoped to
+     one actor's own transitions alone isn't sufficient. Not exhaustive at
+     very large transition counts (`topK` caps results per tier), matching
+     `HEARTBEATS-AND-COMMS.md`'s own equivalent, already-accepted trade-off.
+   - **Still remaining, named not hidden (§6 of the design doc)**: (1)
+     `decisionHourHistogram`'s "hour of day" is UTC, not per-`OrgMember`
+     local time — no timezone field exists on `OrgMember` yet; (2)
+     withdrawing consent does not retroactively delete already-aggregated
+     values, only stops future updates — a full right-to-erasure delete
+     path is future work; (3) `recomputeInteractionSignals`'s per-call
+     full-history recall/recompute is a reasonable v1 choice at expected
+     volumes but isn't designed to scale indefinitely; (4) no read surface
+     exists yet for a human to actually see their own profile (`docs/PLAN.md`
+     Phase 2's dashboard is the natural future consumer of
+     `recallOwnInteractionProfile`) — this slice built the substrate and
+     the access-control boundary, not a UI. The full pipeline
+     (coder → tester → security → reviewer) resumes on this slice per
+     team-lead's explicit instruction, no shortcuts given the domain's
+     sensitivity even though this particular slice has no external PII
+     surface.
 8. **Phase 7 (optional)** — LatentMesh edge-resilience integration for
    agents operating without cloud connectivity, if a concrete use case
    emerges (e.g. via `ruflo-iot-cognitum`).

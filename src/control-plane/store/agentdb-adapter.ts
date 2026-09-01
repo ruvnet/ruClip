@@ -62,6 +62,7 @@ import type { ApprovalAction, ApprovalTransition } from '../schema/approval-tran
 import type { WitnessHook } from '../schema/witness.js';
 import type { HeartbeatSchedule, HeartbeatStatus, HeartbeatTarget } from '../schema/heartbeat-schedule.js';
 import type { NotificationChannel } from '../schema/notification.js';
+import type { EmployeeInteractionProfile } from '../schema/employee-interaction-profile.js';
 import type { CausalRelation, MemoryTier } from '../schema/enums.js';
 import {
   assertValidCompany,
@@ -71,6 +72,7 @@ import {
   assertValidComment,
   assertValidApprovalTransition,
   assertValidHeartbeatSchedule,
+  assertValidEmployeeInteractionProfile,
 } from '../schema/validation.js';
 import { transitionApprovalState, isLegalApprovalTransition } from '../approval/transition-approval-state.js';
 import {
@@ -79,6 +81,7 @@ import {
   acceptClaimHandoff,
   ClaimAuthorizationError,
 } from '../authorization/claims-authorization.js';
+import { recomputeInteractionSignals } from '../employee-augmentation/interaction-profile.js';
 import { AgentDbBridgeError, callTool, assertSafeId, type AgentDbAdapterConfig } from './bridge-client.js';
 
 // Re-exported so every existing `from '../store/agentdb-adapter.js'` import
@@ -575,6 +578,54 @@ export async function recallApprovalTransition(
 }
 
 /**
+ * Broad, client-side-filtered scan of every persisted ApprovalTransition
+ * record for a company — needed by
+ * employee-augmentation/interaction-profile.ts's `recomputeInteractionSignals`
+ * (EMPLOYEE-INTERACTION-PROFILE.md §4 step 2: "query ApprovalTransition
+ * records where actorId === orgMemberId") to pair each actor's approve/
+ * reject transition with the immediately-prior submit transition for the
+ * SAME issueId, which may belong to a different actor — so a query scoped
+ * to one actor alone isn't sufficient; the pairing needs the whole
+ * per-issue transition history. Not named in the design doc's own file
+ * list (only `interactionProfileKey`/`persistInteractionProfile`/
+ * `recallInteractionProfile` are) — added because no existing primitive
+ * supports "list all transitions," matching the exact "list broadly,
+ * filter client-side" pattern `listDueHeartbeats` already establishes for
+ * the same reason (`agentdb_hierarchical-recall` is semantic search, not a
+ * structured filter). Not exhaustive at large scale (topK caps results per
+ * tier) — acceptable at this project's current scale, matching
+ * `listDueHeartbeats`'s own documented limitation and
+ * EMPLOYEE-INTERACTION-PROFILE.md §6 open item 3's explicit acceptance of
+ * this trade-off.
+ */
+export async function listApprovalTransitionsForCompany(
+  companyId: string,
+  config?: AgentDbAdapterConfig,
+): Promise<ApprovalTransition[]> {
+  assertSafeId(companyId, 'companyId');
+  const transitions: ApprovalTransition[] = [];
+  for (const tier of ['working', 'episodic'] as const) {
+    const result = await callTool<{ results?: Array<{ value?: string }> }>(
+      'agentdb_hierarchical-recall',
+      { query: `ruclip:company:${companyId} approval-transition`, tier, topK: 200 },
+      config,
+    );
+    for (const r of result.results ?? []) {
+      if (typeof r.value !== 'string') continue;
+      try {
+        const parsed = JSON.parse(r.value) as Partial<ApprovalTransition>;
+        if (parsed && typeof parsed.issueId === 'string' && typeof parsed.actorId === 'string' && typeof parsed.action === 'string') {
+          transitions.push(parsed as ApprovalTransition);
+        }
+      } catch {
+        // skip malformed entries rather than fail the whole scan
+      }
+    }
+  }
+  return transitions;
+}
+
+/**
  * Orchestrates one approval-state-machine step end to end (APPROVAL-GATE.md
  * §4, AUTHORIZATION.md §8): claims_* authorization choreography, THEN
  * computes the transition (pure, throws before any I/O if illegal),
@@ -596,6 +647,7 @@ export async function applyApprovalTransition(
     reason?: string;
     approver?: OrgMember;
     handoffTo?: OrgMember;
+    interactionLearning?: boolean;
   },
   config?: AgentDbAdapterConfig,
 ): Promise<{ issue: Issue; transition: ApprovalTransition }> {
@@ -648,6 +700,14 @@ export async function applyApprovalTransition(
   }
 
   await persistIssue(companyId, nextIssue, issue.status, transition, { actor }, config);
+
+  // EMPLOYEE-INTERACTION-PROFILE.md §4 — best-effort, same non-blocking
+  // contract deps.notifications already has: a failure here must never
+  // fail the approval decision itself. Default false/omitted — existing
+  // callers are unaffected.
+  if (deps.interactionLearning && (action === 'approve' || action === 'reject')) {
+    await recomputeInteractionSignals(companyId, actor.id, config).catch(() => {});
+  }
 
   // HEARTBEATS-AND-COMMS.md §5 — best-effort; a lost/degraded notification
   // must never fail an approval decision that already succeeded on its own
@@ -989,6 +1049,71 @@ export async function checkOperatingBudget(
 
   const utilizationPct = budgetConfig.budgetUsd > 0 ? totalCostUsd / budgetConfig.budgetUsd : 0;
   return { level: operatingBudgetLevel(utilizationPct, budgetConfig.thresholds), utilizationPct };
+}
+
+// --- EmployeeInteractionProfile (EMPLOYEE-INTERACTION-PROFILE.md §5) --------
+
+/**
+ * Deliberately separate from both `RUCLIP_COST_NAMESPACE` (operational
+ * infra spend) and the `ruclip:company:...` AgentDB hierarchical-store
+ * keys (domain entities) — this is a distinct, more-sensitive category of
+ * data with its own access-control story
+ * (employee-augmentation/interaction-profile.ts), so a future
+ * "delete everything in this namespace" GDPR-style erasure operation is
+ * possible without touching unrelated data.
+ */
+const RUCLIP_EMPLOYEE_PROFILES_NAMESPACE = 'ruclip-employee-profiles';
+
+export function interactionProfileKey(companyId: string, orgMemberId: string): string {
+  assertSafeId(companyId, 'companyId');
+  assertSafeId(orgMemberId, 'orgMemberId');
+  return `ruclip:company:${companyId}:org-member:${orgMemberId}:interaction-profile`;
+}
+
+/** Low-level store primitive — memory_store, provenance_type: 'system_observation' (ADR-323), upsert: true (confirmed real default, see checkOperatingBudget's finding). */
+export async function persistInteractionProfile(
+  profile: EmployeeInteractionProfile,
+  config?: AgentDbAdapterConfig,
+): Promise<void> {
+  assertValidEmployeeInteractionProfile(profile);
+  await callTool(
+    'memory_store',
+    {
+      key: interactionProfileKey(profile.companyId, profile.orgMemberId),
+      value: JSON.stringify(profile),
+      namespace: RUCLIP_EMPLOYEE_PROFILES_NAMESPACE,
+      upsert: true,
+      provenance_type: 'system_observation',
+    },
+    config,
+  );
+}
+
+/**
+ * Low-level recall primitive — exact (companyId, orgMemberId) key via
+ * memory_retrieve. NOT exported for general use as a "read anyone's
+ * profile" function in disguise: this takes the same two structural
+ * parameters `interactionProfileKey` does (the key components), not an
+ * `actor`/requester — callers needing access control go through
+ * `recallOwnInteractionProfile`/`recallInteractionProfileForComposition`
+ * in employee-augmentation/interaction-profile.ts (EMPLOYEE-INTERACTION-PROFILE.md
+ * §2), which both call this. It IS exported (unlike the analogous
+ * `storeAtTier`/`recallByKey`) because `recomputeInteractionSignals` in
+ * that same module needs it directly, per the design's own §4 step 1 note
+ * ("no actor check needed here, this is system-internal recomputation").
+ */
+export async function recallInteractionProfile(
+  companyId: string,
+  orgMemberId: string,
+  config?: AgentDbAdapterConfig,
+): Promise<EmployeeInteractionProfile | null> {
+  const result = await callTool<{ found?: boolean; value?: unknown }>(
+    'memory_retrieve',
+    { key: interactionProfileKey(companyId, orgMemberId), namespace: RUCLIP_EMPLOYEE_PROFILES_NAMESPACE },
+    config,
+  );
+  if (!result.found || typeof result.value !== 'object' || result.value === null) return null;
+  return result.value as EmployeeInteractionProfile;
 }
 
 // --- Pattern-store (DOMAIN-MODEL.md §2.4) -----------------------------------

@@ -8,4 +8,5 @@ export * from './approval-transition.js';
 export * from './witness.js';
 export * from './heartbeat-schedule.js';
 export * from './notification.js';
+export * from './employee-interaction-profile.js';
 export * from './validation.js';

@@ -16,6 +16,7 @@ import type { Issue } from './issue.js';
 import type { Comment } from './comment.js';
 import type { ApprovalAction, ApprovalTransition } from './approval-transition.js';
 import type { HeartbeatSchedule } from './heartbeat-schedule.js';
+import type { EmployeeInteractionProfile, InteractionSignalType } from './employee-interaction-profile.js';
 import type {
   CompanyStatus,
   OrgMemberKind,
@@ -46,6 +47,7 @@ const HEARTBEAT_OUTCOMES: readonly NonNullable<HeartbeatSchedule['lastOutcome']>
   'operating_budget_blocked',
   'error',
 ];
+const INTERACTION_SIGNAL_TYPES: readonly InteractionSignalType[] = ['internal-timing'];
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
@@ -313,4 +315,54 @@ export function assertValidHeartbeatSchedule(schedule: HeartbeatSchedule): void 
   }
   if (!isIsoDate(schedule.createdAt)) throw new SchemaValidationError(entity, 'createdAt must be ISO 8601');
   if (!isIsoDate(schedule.updatedAt)) throw new SchemaValidationError(entity, 'updatedAt must be ISO 8601');
+}
+
+/**
+ * Structural checks only (safe-id fields, `id === orgMemberId`, enum
+ * membership, the 24-length histogram invariant) — no access control here
+ * (EMPLOYEE-INTERACTION-PROFILE.md §2/§3's self-only/internal-only access
+ * boundary lives in the functions in
+ * employee-augmentation/interaction-profile.ts, not in this structural
+ * check), same division of labor `checkApprovalStateGuard` vs.
+ * `transitionApprovalState` already established.
+ */
+export function assertValidEmployeeInteractionProfile(profile: EmployeeInteractionProfile): void {
+  const entity = 'EmployeeInteractionProfile';
+  if (!isSafeId(profile.id)) throw new SchemaValidationError(entity, 'id must be a safe non-empty id string');
+  if (!isSafeId(profile.companyId)) {
+    throw new SchemaValidationError(entity, 'companyId must be a safe non-empty id string');
+  }
+  if (!isSafeId(profile.orgMemberId)) {
+    throw new SchemaValidationError(entity, 'orgMemberId must be a safe non-empty id string');
+  }
+  if (profile.id !== profile.orgMemberId) {
+    throw new SchemaValidationError(entity, 'id must equal orgMemberId — one profile per human OrgMember');
+  }
+  if (
+    !Array.isArray(profile.consentedSignalTypes) ||
+    profile.consentedSignalTypes.some((t) => !INTERACTION_SIGNAL_TYPES.includes(t))
+  ) {
+    throw new SchemaValidationError(
+      entity,
+      `consentedSignalTypes must be an array drawn from ${INTERACTION_SIGNAL_TYPES.join(', ')}`,
+    );
+  }
+  if (
+    profile.medianDecisionLatencySeconds !== null &&
+    (typeof profile.medianDecisionLatencySeconds !== 'number' || profile.medianDecisionLatencySeconds < 0)
+  ) {
+    throw new SchemaValidationError(entity, 'medianDecisionLatencySeconds must be a non-negative number or null');
+  }
+  if (
+    !Array.isArray(profile.decisionHourHistogram) ||
+    profile.decisionHourHistogram.length !== 24 ||
+    profile.decisionHourHistogram.some((n) => typeof n !== 'number' || n < 0 || !Number.isInteger(n))
+  ) {
+    throw new SchemaValidationError(entity, 'decisionHourHistogram must be an array of 24 non-negative integers');
+  }
+  if (typeof profile.sampleCount !== 'number' || profile.sampleCount < 0 || !Number.isInteger(profile.sampleCount)) {
+    throw new SchemaValidationError(entity, 'sampleCount must be a non-negative integer');
+  }
+  if (!isIsoDate(profile.createdAt)) throw new SchemaValidationError(entity, 'createdAt must be ISO 8601');
+  if (!isIsoDate(profile.updatedAt)) throw new SchemaValidationError(entity, 'updatedAt must be ISO 8601');
 }
