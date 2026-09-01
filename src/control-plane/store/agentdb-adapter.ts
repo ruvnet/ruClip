@@ -468,6 +468,21 @@ async function checkAuthorizationGuard(
     );
   }
   const actor = 'credential' in authorization ? await resolveVerifiedActor(authorization, config) : authorization.actor;
+  // Security-hardening correction (security review round 7): mirrors
+  // applyApprovalTransition's own `actor.companyId !== companyId` check
+  // (added in this same slice). Without this, a credential verified for a
+  // DIFFERENT company than `companyId` wasn't explicitly rejected here —
+  // the subsequent recallOrgMember(companyId, actor.id, ...) below happens
+  // to fail closed in that case (it looks the id up in the wrong company's
+  // table and finds nothing), so this wasn't independently exploitable, but
+  // leaving it implicit/incidental instead of an explicit check is the same
+  // class of latent risk a future refactor of that recall could reopen —
+  // made deliberate here, matching the sibling code path exactly.
+  if ('credential' in authorization && actor.companyId !== companyId) {
+    throw new ApprovalGateViolationError(
+      `checkAuthorizationGuard: verified actor '${actor.id}' belongs to company '${actor.companyId}', not '${companyId}'`,
+    );
+  }
   if (actor.id !== approvalTransition.actorId) {
     throw new ApprovalGateViolationError(
       `authorization.actor.id '${actor.id}' does not match approvalTransition.actorId '${approvalTransition.actorId}'`,
@@ -881,6 +896,30 @@ export async function persistHeartbeatSchedule(
   if (stored === null && !authorization) {
     throw new ApprovalGateViolationError(
       `Creating HeartbeatSchedule '${schedule.id}' requires an acting OrgMember (HEARTBEATS-AND-COMMS.md §6) — ` +
+        `authorization was not supplied`,
+    );
+  }
+  // Security-hardening correction (security review round 7): the create-only
+  // check above left every UPDATE (pause or resume of an existing schedule)
+  // fully unauthenticated — `authorization` was optional with nothing
+  // requiring it. fireHeartbeat's own legitimate no-authorization writes
+  // only ever fire (status unchanged) or auto-pause on a budget block
+  // (active -> paused); it never resumes a schedule (HEARTBEATS-AND-COMMS.md
+  // §3 step 2 — "a human must explicitly resume"). A resume (paused ->
+  // active) is therefore unambiguously one of the three actor-driven
+  // operations HEARTBEATS-AND-COMMS.md §6 / ACTOR-IDENTITY-VERIFICATION.md
+  // §5 item 4 require authorization for, and is now enforced — confirmed
+  // exploitable (zero authorization needed to resume) by an independent
+  // test. An actor-initiated PAUSE (active -> paused) remains genuinely
+  // ambiguous with fireHeartbeat's own system pause at the parameter level —
+  // both are the identical transition with no discriminant between "budget
+  // gate paused this" and "an actor asked to pause this" — closing that
+  // specific case needs a design decision (e.g. an explicit pause-source
+  // parameter), not a mechanical fix, so it stays open, same disposition as
+  // before this round.
+  if (stored !== null && stored.status === 'paused' && schedule.status === 'active' && !authorization) {
+    throw new ApprovalGateViolationError(
+      `Resuming HeartbeatSchedule '${schedule.id}' requires an acting OrgMember (HEARTBEATS-AND-COMMS.md §6) — ` +
         `authorization was not supplied`,
     );
   }

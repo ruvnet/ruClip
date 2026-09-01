@@ -26,22 +26,36 @@
  * three actor-driven operations the design names, yet nothing enforces
  * that here.
  *
- * FINDING 2 (test 2 below): `applyApprovalTransition` was correctly
- * hardened with a new check — `actor.companyId !== companyId` — right
- * after resolving the credential, closing "a credential legitimately
- * issued for OrgMember X in company A gets presented to a call for company
- * B." `persistIssue`'s Guard C (`checkAuthorizationGuard`) has the
- * identical `{credential, admittedIssuerKeys}` standalone-caller branch
- * (added by this same commit, for direct/standalone callers per its own
- * new doc comment) but never added the equivalent cross-company check —
- * only `actor.id !== approvalTransition.actorId` and
- * `actor.status !== 'active'` are checked. A credential for a real,
- * active OrgMember in company A can be used to approve/reject an Issue
- * `persistIssue` is told belongs to company B, as long as the id/status/
- * self-approval checks and the (company-agnostic) `verifyActorHoldsClaim`
- * call happen to pass — exactly the class of gap
- * `applyApprovalTransition`'s own new check in this same commit exists to
- * prevent, just not applied to the sibling code path.
+ * TEST-QUALITY FINDING (test 2 below), FIXED: the coder's own
+ * tests/control-plane/actor-identity-verification.test.ts has a
+ * `baseTransition(overrides)` helper that accepts an `overrides` parameter
+ * but never spreads it into the returned object — every override at every
+ * call site in that file was silently dropped. This mattered most for the
+ * test explicitly labeled "REGRESSION (the exact scenario security
+ * found)" — meant to prove a credential for a DIFFERENT orgMemberId than a
+ * forged transition's actorId is rejected. With overrides dropped, the
+ * forged transition ends up with `fromState: 'draft'` while `stored` is
+ * deliberately `approvalState: 'pending'`, so `assert.rejects` passed
+ * because Guard A's structural fromState-mismatch check fired three checks
+ * before Guard C's actor-identity check would ever run — not because the
+ * identity mismatch was caught. Fixed the helper (added the missing
+ * `...overrides` spread) directly in that file. Test 2 below is the
+ * ground-truth check: the same scenario, built so Guard A's structural
+ * checks pass cleanly, isolating Guard C's actor-identity check
+ * specifically — proving the real fix works, independent of the broken
+ * test that was supposed to prove it.
+ *
+ * (A third hypothesis was chased and did NOT hold up, so it isn't a test
+ * here: whether persistIssue's Guard C `checkAuthorizationGuard` was
+ * missing the cross-company check `applyApprovalTransition` has. Guard C's
+ * existing status-recheck recalls the OrgMember using persistIssue's own
+ * `companyId` param rather than the credential's verified one, which
+ * incidentally fails closed — not open — when they differ, so it wasn't
+ * independently exploitable. Reported to security as a "make it
+ * deliberate, not incidental" note rather than a finding; security added
+ * the explicit `actor.companyId !== companyId` check to Guard C anyway,
+ * mirroring the sibling code path exactly, so this is now closed either
+ * way.)
  *
  * No live AgentDB/radio-moe network instance — mockBridge for the AgentDB
  * bridge, real radio-moe signing/verification via the shared
@@ -132,11 +146,16 @@ function orgMemberRecall(member: OrgMember) {
 }
 
 // --- Finding 1: heartbeat pause/resume of an EXISTING schedule needs no authorization at all ---
+//
+// FIXED (security review round 7): persistHeartbeatSchedule now requires
+// `authorization` whenever the transition is specifically a resume
+// (stored.status === 'paused' && schedule.status === 'active') — the one
+// UPDATE shape that's unambiguously always actor-driven, since fireHeartbeat
+// never resumes. This test now locks down the rejection.
 
 test(
-  'FINDING: persistHeartbeatSchedule resumes a previously-paused schedule (an UPDATE, stored !== null) ' +
-    'with NO authorization supplied at all — no credential, no claim check, nothing — because the create-path ' +
-    'guard only fires when stored === null',
+  'FIXED: persistHeartbeatSchedule rejects resuming a previously-paused schedule (an UPDATE, stored !== null) ' +
+    'with NO authorization supplied — resume is unambiguously actor-driven (fireHeartbeat never resumes)',
   async () => {
     const issue = baseIssue();
     const pausedSchedule = baseSchedule({ status: 'paused' });
@@ -159,12 +178,13 @@ test(
     });
 
     const resumedSchedule = baseSchedule({ status: 'active' });
-    await assert.doesNotReject(() =>
-      persistHeartbeatSchedule(resumedSchedule, undefined, 'paused', config),
+    await assert.rejects(
+      () => persistHeartbeatSchedule(resumedSchedule, undefined, 'paused', config),
+      /Resuming HeartbeatSchedule .* requires an acting OrgMember/,
     );
     assert.ok(
-      !calls.some((c) => c.toolName === 'claims_list'),
-      'resuming an existing schedule performed zero authorization checks of any kind',
+      !calls.some((c) => c.toolName === 'claims_list' || c.toolName === 'agentdb_hierarchical-store'),
+      'a rejected resume must make no authorization calls and no writes',
     );
   },
 );

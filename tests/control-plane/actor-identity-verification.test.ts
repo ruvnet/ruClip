@@ -74,6 +74,7 @@ function baseTransition(overrides: Partial<ApprovalTransition> = {}): ApprovalTr
     reason: null,
     createdAt: now,
     witnessRef: null,
+    ...overrides,
   };
 }
 
