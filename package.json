@@ -1,0 +1,29 @@
+{
+  "name": "ruclip",
+  "version": "0.0.1",
+  "private": false,
+  "description": "ruvnet-only control plane for running an AI-agent company end-to-end",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ruvnet/ruClip.git"
+  },
+  "scripts": {
+    "build": "echo \"no build yet — scaffold stage\" && exit 0",
+    "test": "echo \"no tests yet — scaffold stage\" && exit 0",
+    "lint": "echo \"no lint config yet — scaffold stage\" && exit 0"
+  },
+  "peerDependencies": {
+    "ruflo": "*",
+    "metaharness": "*",
+    "ruvector": "*",
+    "agentbbs": "*"
+  },
+  "peerDependenciesMeta": {
+    "ruflo": { "optional": false },
+    "metaharness": { "optional": false },
+    "ruvector": { "optional": false },
+    "agentbbs": { "optional": true }
+  }
+}
