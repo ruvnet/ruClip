@@ -134,24 +134,54 @@ async function callTool<T = unknown>(
 
 // --- Keying (DOMAIN-MODEL.md §2.2) ---------------------------------------
 
+/**
+ * Keys/node-ids below are built by string-concatenating caller-supplied ids
+ * into `:`-delimited templates, and recallByKey does exact-string matching
+ * on the result. An id containing a template's own delimiter (":goal:",
+ * ":issue:", "entity:issue:", etc.) can make two semantically different id
+ * tuples serialize to the identical key/node-id string, letting a crafted id
+ * collide with — and overwrite or be confused with — a different entity's
+ * record or graph node. assertValid* in schema/validation.ts blocks unsafe
+ * ids on entity write paths; this guard covers the id-only functions below
+ * (recall, causal-edge, graph-neighbor lookups) that never go through an
+ * assertValid* call.
+ */
+const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,256}$/;
+
+function assertSafeId(value: string, label: string): void {
+  if (!SAFE_ID_PATTERN.test(value)) {
+    throw new AgentDbBridgeError(`Refusing to build an AgentDB key/node-id from unsafe ${label} '${value}'`);
+  }
+}
+
 export function companyKey(companyId: string): string {
+  assertSafeId(companyId, 'companyId');
   return `ruclip:company:${companyId}`;
 }
 export function orgMemberKey(companyId: string, orgMemberId: string): string {
+  assertSafeId(companyId, 'companyId');
+  assertSafeId(orgMemberId, 'orgMemberId');
   return `ruclip:company:${companyId}:org-member:${orgMemberId}`;
 }
 export function goalKey(companyId: string, goalId: string): string {
+  assertSafeId(companyId, 'companyId');
+  assertSafeId(goalId, 'goalId');
   return `ruclip:company:${companyId}:goal:${goalId}`;
 }
 export function issueKey(companyId: string, goalId: string, issueId: string): string {
+  assertSafeId(companyId, 'companyId');
+  assertSafeId(goalId, 'goalId');
+  assertSafeId(issueId, 'issueId');
   return `ruclip:company:${companyId}:goal:${goalId}:issue:${issueId}`;
 }
 export function commentKey(companyId: string, goalId: string, issueId: string, commentId: string): string {
+  assertSafeId(commentId, 'commentId');
   return `${issueKey(companyId, goalId, issueId)}:comment:${commentId}`;
 }
 
 /** ADR-130 domain-prefixed node id for causal-edge / graph-query calls. */
 function entityNodeId(kind: 'company' | 'org-member' | 'goal' | 'issue', id: string): string {
+  assertSafeId(id, 'id');
   return `entity:${kind}:${id}`;
 }
 

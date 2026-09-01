@@ -41,6 +41,25 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
+/**
+ * store/agentdb-adapter.ts builds AgentDB keys and causal-edge node ids by
+ * string-concatenating id-like fields into `:`-delimited templates (e.g.
+ * `ruclip:company:${companyId}:goal:${goalId}:issue:${issueId}`,
+ * `entity:${kind}:${id}`). recallByKey does exact-string matching on the
+ * result, so an id containing the template's own delimiters (":goal:",
+ * ":issue:", etc.) can make two different (companyId, goalId, issueId)
+ * triples serialize to the identical key string — letting a crafted id
+ * overwrite or shadow a different entity's stored record (e.g. an approved
+ * Issue's approvalState/budgetImpact) while still passing per-field
+ * validation. Restricting every key-constituent id to a safe charset closes
+ * that collision, not just the empty-string case isNonEmptyString covered.
+ */
+const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,256}$/;
+
+function isSafeId(value: unknown): value is string {
+  return typeof value === 'string' && SAFE_ID_PATTERN.test(value);
+}
+
 function isIsoDate(value: unknown): value is string {
   return typeof value === 'string' && !Number.isNaN(Date.parse(value));
 }
@@ -75,10 +94,10 @@ function assertBudget(budget: Budget, entity: string): void {
 
 export function assertValidCompany(company: Company): void {
   const entity = 'Company';
-  if (!isNonEmptyString(company.id)) throw new SchemaValidationError(entity, 'id is required');
+  if (!isSafeId(company.id)) throw new SchemaValidationError(entity, 'id must be a safe non-empty id string');
   if (!isNonEmptyString(company.name)) throw new SchemaValidationError(entity, 'name is required');
-  if (company.primaryGoalId !== null && !isNonEmptyString(company.primaryGoalId)) {
-    throw new SchemaValidationError(entity, 'primaryGoalId must be a non-empty string or null');
+  if (company.primaryGoalId !== null && !isSafeId(company.primaryGoalId)) {
+    throw new SchemaValidationError(entity, 'primaryGoalId must be a safe non-empty id string or null');
   }
   assertBudget(company.budget, entity);
   if (!COMPANY_STATUSES.includes(company.status)) {
@@ -90,8 +109,10 @@ export function assertValidCompany(company: Company): void {
 
 export function assertValidOrgMember(member: OrgMember): void {
   const entity = 'OrgMember';
-  if (!isNonEmptyString(member.id)) throw new SchemaValidationError(entity, 'id is required');
-  if (!isNonEmptyString(member.companyId)) throw new SchemaValidationError(entity, 'companyId is required');
+  if (!isSafeId(member.id)) throw new SchemaValidationError(entity, 'id must be a safe non-empty id string');
+  if (!isSafeId(member.companyId)) {
+    throw new SchemaValidationError(entity, 'companyId must be a safe non-empty id string');
+  }
   if (!ORG_MEMBER_KINDS.includes(member.kind)) {
     throw new SchemaValidationError(entity, `kind must be one of ${ORG_MEMBER_KINDS.join(', ')}`);
   }
@@ -99,8 +120,8 @@ export function assertValidOrgMember(member: OrgMember): void {
     throw new SchemaValidationError(entity, 'identityRef is required');
   }
   if (!isNonEmptyString(member.role)) throw new SchemaValidationError(entity, 'role is required');
-  if (member.managerId !== null && !isNonEmptyString(member.managerId)) {
-    throw new SchemaValidationError(entity, 'managerId must be a non-empty string or null');
+  if (member.managerId !== null && !isSafeId(member.managerId)) {
+    throw new SchemaValidationError(entity, 'managerId must be a safe non-empty id string or null');
   }
   if (member.managerId === member.id) {
     throw new SchemaValidationError(entity, 'managerId must not equal id');
@@ -112,8 +133,10 @@ export function assertValidOrgMember(member: OrgMember): void {
 
 export function assertValidGoal(goal: Goal): void {
   const entity = 'Goal';
-  if (!isNonEmptyString(goal.id)) throw new SchemaValidationError(entity, 'id is required');
-  if (!isNonEmptyString(goal.companyId)) throw new SchemaValidationError(entity, 'companyId is required');
+  if (!isSafeId(goal.id)) throw new SchemaValidationError(entity, 'id must be a safe non-empty id string');
+  if (!isSafeId(goal.companyId)) {
+    throw new SchemaValidationError(entity, 'companyId must be a safe non-empty id string');
+  }
   if (!isNonEmptyString(goal.description)) throw new SchemaValidationError(entity, 'description is required');
   if (!Array.isArray(goal.successCriteria) || goal.successCriteria.some((c) => !isNonEmptyString(c))) {
     throw new SchemaValidationError(entity, 'successCriteria must be an array of non-empty strings');
@@ -121,8 +144,8 @@ export function assertValidGoal(goal: Goal): void {
   if (!GOAL_STATUSES.includes(goal.status)) {
     throw new SchemaValidationError(entity, `status must be one of ${GOAL_STATUSES.join(', ')}`);
   }
-  if (goal.ownerId !== null && !isNonEmptyString(goal.ownerId)) {
-    throw new SchemaValidationError(entity, 'ownerId must be a non-empty string or null');
+  if (goal.ownerId !== null && !isSafeId(goal.ownerId)) {
+    throw new SchemaValidationError(entity, 'ownerId must be a safe non-empty id string or null');
   }
   if (goal.budgetAllocation !== null) {
     if (typeof goal.budgetAllocation !== 'number' || goal.budgetAllocation < 0) {
@@ -135,18 +158,20 @@ export function assertValidGoal(goal: Goal): void {
 
 export function assertValidIssue(issue: Issue): void {
   const entity = 'Issue';
-  if (!isNonEmptyString(issue.id)) throw new SchemaValidationError(entity, 'id is required');
-  if (!isNonEmptyString(issue.goalId)) throw new SchemaValidationError(entity, 'goalId is required');
+  if (!isSafeId(issue.id)) throw new SchemaValidationError(entity, 'id must be a safe non-empty id string');
+  if (!isSafeId(issue.goalId)) {
+    throw new SchemaValidationError(entity, 'goalId must be a safe non-empty id string');
+  }
   if (issue.parentId !== null) {
-    if (!isNonEmptyString(issue.parentId)) {
-      throw new SchemaValidationError(entity, 'parentId must be a non-empty string or null');
+    if (!isSafeId(issue.parentId)) {
+      throw new SchemaValidationError(entity, 'parentId must be a safe non-empty id string or null');
     }
     if (issue.parentId === issue.id) {
       throw new SchemaValidationError(entity, 'parentId must not equal id (no self-parenting)');
     }
   }
-  if (issue.assigneeId !== null && !isNonEmptyString(issue.assigneeId)) {
-    throw new SchemaValidationError(entity, 'assigneeId must be a non-empty string or null');
+  if (issue.assigneeId !== null && !isSafeId(issue.assigneeId)) {
+    throw new SchemaValidationError(entity, 'assigneeId must be a safe non-empty id string or null');
   }
   if (!isNonEmptyString(issue.title)) throw new SchemaValidationError(entity, 'title is required');
   if (typeof issue.description !== 'string') {
@@ -184,9 +209,13 @@ export function assertValidIssue(issue: Issue): void {
 
 export function assertValidComment(comment: Comment): void {
   const entity = 'Comment';
-  if (!isNonEmptyString(comment.id)) throw new SchemaValidationError(entity, 'id is required');
-  if (!isNonEmptyString(comment.issueId)) throw new SchemaValidationError(entity, 'issueId is required');
-  if (!isNonEmptyString(comment.authorId)) throw new SchemaValidationError(entity, 'authorId is required');
+  if (!isSafeId(comment.id)) throw new SchemaValidationError(entity, 'id must be a safe non-empty id string');
+  if (!isSafeId(comment.issueId)) {
+    throw new SchemaValidationError(entity, 'issueId must be a safe non-empty id string');
+  }
+  if (!isSafeId(comment.authorId)) {
+    throw new SchemaValidationError(entity, 'authorId must be a safe non-empty id string');
+  }
   if (!isNonEmptyString(comment.body)) throw new SchemaValidationError(entity, 'body is required');
   if (!isIsoDate(comment.createdAt)) throw new SchemaValidationError(entity, 'createdAt must be ISO 8601');
 }
