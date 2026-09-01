@@ -173,6 +173,22 @@ between them and the writes:
   independently of `transitionApprovalState`'s own check, since a forged
   `ApprovalTransition` never passed through that function. Throws
   `ApprovalGateViolationError`.
+
+  **Security-hardening correction (post-c52c8d8, security review round 3):**
+  the original text above was implemented literally — checking
+  `authorization.actor.status` on the object the *caller* handed in. That is
+  not actually re-verification of anything: a caller can set that field to
+  whatever they want, exactly the trust bug the pre-`de48670` Guard A
+  create-path had. Confirmed exploitable by an independent test
+  (`tests/control-plane/authorization-trust-boundary.test.ts`): an OrgMember
+  an operator marks `'inactive'` in ruClip's own store keeps deciding
+  approvals for as long as `ruflo`'s claims system (which has no concept of
+  `OrgMember.status`) still shows them holding the claim. Fixed to recall
+  the actual persisted `OrgMember` via `recallOrgMember(companyId,
+  actor.id, config)` and check *its* `status` — a missing record is treated
+  as unauthorized, not as "trust the caller" — matching how the
+  self-approval re-check below already treats its own input (persisted
+  state, never a parameter).
 - **Self-approval re-check, against persisted state, not a parameter**:
   when `approvalTransition.action ∈ {approve, reject}` and
   `stored.approvalTransitionRef` is non-null, recall the actual persisted

@@ -14,24 +14,26 @@
  * checkAuthorizationGuard (Guard C) and applyApprovalTransition in full
  * before writing these.
  *
- * FINDING (test 1 below): checkAuthorizationGuard's `actor.status !== 'active'`
- * check operates ENTIRELY on the caller-supplied `authorization.actor`
- * object — it never calls recallOrgMember (exported, but grep confirms it
- * has no other call site in agentdb-adapter.ts) to cross-reference the
- * actually-persisted OrgMember record. This is structurally the same class
- * of bug as the pre-de48670 Guard A create-path issue: trusting a
- * caller-supplied field instead of recalling ground truth. A caller who
- * knows a real, currently-live claimant string (kind:id:role — needed to
- * pass verifyActorHoldsClaim, the one check that IS unforgeable) can freely
- * lie about that actor's `status` field and Guard C will not catch it,
- * because nothing ever looks up what that OrgMember's real, persisted
- * status is. This is narrower than the old Guard A bug (verifyActorHoldsClaim
- * still requires a genuine live claim, which isn't forgeable from inside
- * this repo) but it is real: an OrgMember an operator has marked 'inactive'
- * in ruClip's own store — expecting that to freeze their approval authority
- * — keeps deciding approvals for as long as ruflo's claims system (which
- * has no concept of ruClip's OrgMember.status at all) still shows them
- * holding the claim.
+ * FINDING (test 1 below), FIXED post-a51d487: checkAuthorizationGuard's
+ * `actor.status !== 'active'` check originally operated ENTIRELY on the
+ * caller-supplied `authorization.actor` object — it never called
+ * recallOrgMember to cross-reference the actually-persisted OrgMember
+ * record. That was structurally the same class of bug as the pre-de48670
+ * Guard A create-path issue: trusting a caller-supplied field instead of
+ * recalling ground truth. A caller who knew a real, currently-live claimant
+ * string (kind:id:role — needed to pass verifyActorHoldsClaim, the one
+ * check that IS unforgeable) could freely lie about that actor's `status`
+ * field and Guard C would not catch it, because nothing ever looked up what
+ * that OrgMember's real, persisted status was. That was narrower than the
+ * old Guard A bug (verifyActorHoldsClaim still requires a genuine live
+ * claim, which isn't forgeable from inside this repo) but it was real: an
+ * OrgMember an operator has marked 'inactive' in ruClip's own store —
+ * expecting that to freeze their approval authority — would keep deciding
+ * approvals for as long as ruflo's claims system (which has no concept of
+ * ruClip's OrgMember.status at all) still showed them holding the claim.
+ * checkAuthorizationGuard now calls recallOrgMember and checks the
+ * PERSISTED record's status (a missing record is treated as unauthorized,
+ * not as "trust the caller") — test 1 below now locks down the rejection.
  *
  * ANSWER (test 2 below): self-approval via the *legitimate* choreography —
  * an actor submits an issue naming themselves as deps.approver, then calls
@@ -52,6 +54,7 @@ import assert from 'node:assert/strict';
 import { mockBridge } from '../support/mock-bridge.js';
 import {
   persistIssue,
+  persistOrgMember,
   applyApprovalTransition,
   recallOrgMember,
 } from '../../src/control-plane/store/agentdb-adapter.js';
@@ -115,8 +118,8 @@ function baseTransition(overrides: Partial<ApprovalTransition> = {}): ApprovalTr
 // --- Finding: Guard C trusts the caller-supplied actor.status, never recalls ground truth ---
 
 test(
-  'Guard C accepts a self-reported status: "active" actor even when the REAL, persisted OrgMember record ' +
-    'for that id is "inactive" — checkAuthorizationGuard never calls recallOrgMember',
+  'Guard C rejects a self-reported status: "active" actor when the REAL, persisted OrgMember record ' +
+    'for that id is "inactive" — checkAuthorizationGuard now recalls ground truth instead of trusting the caller',
   async () => {
     const realInactiveMember: OrgMember = baseActor({ id: 'om-approver', status: 'inactive' });
     const persistedSubmitTransition = baseTransition({ actorId: 'om-submitter' }); // different actor: not a self-approval case
@@ -136,10 +139,11 @@ test(
     // The attack: persistIssue is called (bypassing applyApprovalTransition,
     // same shape as the coder's 57ab6ab forgery test) with an approve
     // transition whose actorId is 'om-approver', and an authorization.actor
-    // object claiming status: 'active' for that same id. No handler for the
-    // org-member key is registered on THIS bridge at all — if Guard C ever
-    // tried to recall the real record, this mock would throw
-    // "No mock handler registered", proving definitively that it doesn't.
+    // object claiming status: 'active' for that same id. This bridge DOES
+    // wire the org-member key to the real 'inactive' record (unlike the
+    // pre-fix version of this test, which deliberately left it unregistered
+    // to prove Guard C never queried it at all) — post-fix, Guard C must
+    // recall this record and reject on its real status, not the caller's.
     const { config: attackConfig } = mockBridge({
       'agentdb_hierarchical-recall': (args) => {
         if (args.query === issueKeyStr && args.tier === 'working') {
@@ -147,6 +151,9 @@ test(
         }
         if (args.query === submitTransitionKeyStr && args.tier === 'working') {
           return { results: [{ key: submitTransitionKeyStr, value: JSON.stringify(persistedSubmitTransition) }] };
+        }
+        if (args.query === orgMemberKeyStr && args.tier === 'semantic') {
+          return { results: [{ key: orgMemberKeyStr, value: JSON.stringify(realInactiveMember) }] };
         }
         return { results: [] };
       },
@@ -171,11 +178,11 @@ test(
       approvalTransitionRef: 'transition-approve',
     });
 
-    // If this rejects, Guard C is doing its job correctly and this test
-    // documents that the finding above is NOT (or no longer) exploitable.
-    // As of commit c52c8d8, it does not reject.
-    await assert.doesNotReject(() =>
-      persistIssue('co-1', approvedIssue, undefined, approveTransition, { actor: forgedActiveClaim }, attackConfig),
+    // checkAuthorizationGuard now recalls the real OrgMember record and
+    // rejects on ITS status ('inactive'), ignoring the caller's forged claim.
+    await assert.rejects(
+      () => persistIssue('co-1', approvedIssue, undefined, approveTransition, { actor: forgedActiveClaim }, attackConfig),
+      /status is 'inactive'/,
     );
   },
 );
@@ -242,6 +249,9 @@ test(
     });
 
     const selfDealer = baseActor({ id: 'om-self-dealer' });
+    // Persisted so Guard C's actor-active check (ground-truth-recalled, see
+    // the fix documented at the top of this file) finds a real record.
+    await persistOrgMember(selfDealer, config);
     await import('../../src/control-plane/authorization/claims-authorization.js').then(({ claimIssueForActor }) =>
       claimIssueForActor('issue-1', selfDealer, undefined, config),
     );

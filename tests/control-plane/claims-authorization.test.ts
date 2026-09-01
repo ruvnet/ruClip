@@ -34,6 +34,7 @@ import {
 } from '../../src/control-plane/authorization/claims-authorization.js';
 import {
   persistIssue,
+  persistOrgMember,
   recallApprovalTransition,
   applyApprovalTransition,
   ApprovalGateViolationError,
@@ -280,10 +281,20 @@ test(
       actorId: submitterId,
     });
     const stored = baseIssue({ approvalState: 'pending', approvalTransitionRef: 'transition-submit' });
+    const orgMemberKeyStr = `ruclip:company:co-1:org-member:${submitterId}`;
+    // The forged approval names submitterId as the "approver," so Guard C's
+    // (now ground-truth-recalled) actor-active check must find a persisted,
+    // active OrgMember for that id — otherwise the test would reject for
+    // "no persisted OrgMember record" instead of the self-approval recheck
+    // this test exists to exercise.
+    const impersonatingSubmitterRecord = baseActor({ id: submitterId, status: 'active' });
 
     const { calls, config } = mockBridge({
       'agentdb_hierarchical-recall': (args) => {
         const query = args.query as string;
+        if (args.tier === 'semantic' && query === orgMemberKeyStr) {
+          return { results: [{ key: orgMemberKeyStr, value: JSON.stringify(impersonatingSubmitterRecord) }] };
+        }
         if (args.tier !== 'working') return { results: [] };
         if (query === issueKeyStr) return { results: [{ key: issueKeyStr, value: JSON.stringify(stored) }] };
         if (query === submitTransitionKey) {
@@ -442,6 +453,12 @@ test('End-to-end round trip: submit -> approve against a stateful mock', async (
   const approver = baseActor({ id: 'om-approver' });
   const { config } = createStatefulBridge();
 
+  // Persisted so Guard C's actor-active check (now ground-truth-recalled,
+  // not trusted from the caller-supplied object — see agentdb-adapter.ts's
+  // checkAuthorizationGuard) finds a real, active OrgMember record for each.
+  await persistOrgMember(submitter, config);
+  await persistOrgMember(approver, config);
+
   // Claim established at issue-creation time, per AUTHORIZATION.md §5.
   await claimIssueForActor('issue-1', submitter, undefined, config);
 
@@ -467,6 +484,9 @@ test('End-to-end round trip: submit -> reject -> revise against a stateful mock'
   const submitter = baseActor({ id: 'om-submitter' });
   const approver = baseActor({ id: 'om-approver' });
   const { config } = createStatefulBridge();
+
+  await persistOrgMember(submitter, config);
+  await persistOrgMember(approver, config);
 
   await claimIssueForActor('issue-1', submitter, undefined, config);
 

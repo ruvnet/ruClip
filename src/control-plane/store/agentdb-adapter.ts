@@ -420,10 +420,26 @@ function checkBudgetImpactFrozenGuard(issue: Issue, stored: Issue | null): void 
  * whether the actorId inside it is genuine. No-op when approvalTransition
  * is undefined (no approval-state change this write, nothing to
  * authorize). Otherwise requires `authorization`, checks the supplied actor
- * matches the transition and is active, re-verifies the self-approval
+ * matches the transition, re-verifies status: 'active' against the
+ * PERSISTED OrgMember record (never the caller-supplied `authorization.actor`
+ * object — recalled via recallOrgMember; a missing record is treated as
+ * unauthorized, not as "trust the caller"), re-verifies the self-approval
  * invariant against the PERSISTED submit transition (never a
  * caller-supplied object — recalled via recallApprovalTransition), then
  * calls verifyActorHoldsClaim as the unforgeable external check.
+ *
+ * Security-hardening correction to AUTHORIZATION.md §6's original text
+ * ("`authorization.actor.status === 'active'` — re-verified here
+ * independently of `transitionApprovalState`'s own check"): checking the
+ * field on the caller-supplied object is not actually re-verification of
+ * anything — a caller can set that field to whatever they want, the same
+ * way the pre-hardening Guard A create-path trusted a caller-supplied
+ * approvalTransition. Confirmed exploitable in practice (an operator marks
+ * an OrgMember 'inactive' in ruClip's own store expecting that to freeze
+ * their approval authority; a caller who still knows their live claimant
+ * string could keep approving by lying about `status` in the object handed
+ * to Guard C). Ground truth now comes from a recall, matching how the
+ * self-approval check below already treats its own input.
  */
 async function checkAuthorizationGuard(
   companyId: string,
@@ -446,9 +462,17 @@ async function checkAuthorizationGuard(
       `authorization.actor.id '${actor.id}' does not match approvalTransition.actorId '${approvalTransition.actorId}'`,
     );
   }
-  if (actor.status !== 'active') {
+  const persistedActor = await recallOrgMember(companyId, actor.id, config);
+  if (!persistedActor) {
     throw new ApprovalGateViolationError(
-      `Actor '${actor.id}' cannot be authorized for an approval decision while status is '${actor.status}'`,
+      `Actor '${actor.id}' has no persisted OrgMember record in company '${companyId}' — an unknown actor cannot ` +
+        `be authorized for an approval decision`,
+    );
+  }
+  if (persistedActor.status !== 'active') {
+    throw new ApprovalGateViolationError(
+      `Actor '${actor.id}' cannot be authorized for an approval decision while status is '${persistedActor.status}' ` +
+        `(re-verified against the persisted OrgMember record, not the caller-supplied authorization.actor object)`,
     );
   }
 

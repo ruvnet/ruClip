@@ -74,10 +74,31 @@ function baseTransition(overrides: Partial<ApprovalTransition> = {}): ApprovalTr
   };
 }
 
-/** recall handler that returns `stored` for the working-tier check and nothing for episodic. */
-function recallReturning(stored: Issue | null) {
-  return (args: Record<string, unknown>) =>
-    args.tier === 'working' && stored ? { results: [{ key: issueKeyStr, value: JSON.stringify(stored) }] } : { results: [] };
+function orgMemberKeyStr(companyId: string, id: string): string {
+  return `ruclip:company:${companyId}:org-member:${id}`;
+}
+
+/**
+ * recall handler that returns `stored` for the working-tier check, nothing
+ * for episodic, and (since Guard C's actor-active check now recalls the
+ * persisted OrgMember record instead of trusting authorization.actor —
+ * security hardening, see agentdb-adapter.ts's checkAuthorizationGuard)
+ * serves any `activeMembers` passed in at their semantic-tier key so tests
+ * that supply an approvalTransition (and therefore trigger Guard C) don't
+ * spuriously fail with "no persisted OrgMember record".
+ */
+function recallReturning(stored: Issue | null, ...activeMembers: OrgMember[]) {
+  const memberEntries = new Map(activeMembers.map((m) => [orgMemberKeyStr(m.companyId, m.id), m]));
+  return (args: Record<string, unknown>) => {
+    if (args.tier === 'working' && stored) {
+      return { results: [{ key: issueKeyStr, value: JSON.stringify(stored) }] };
+    }
+    if (args.tier === 'semantic') {
+      const member = memberEntries.get(args.query as string);
+      if (member) return { results: [{ key: args.query as string, value: JSON.stringify(member) }] };
+    }
+    return { results: [] };
+  };
 }
 
 /**
@@ -210,7 +231,7 @@ test('Guard A real transition: succeeds when the supplied ApprovalTransition mat
   const stored = baseIssue({ approvalState: 'draft', approvalTransitionRef: null });
   const actor = baseActor({ id: 'om-submitter' });
   const { config } = mockBridge({
-    'agentdb_hierarchical-recall': recallReturning(stored),
+    'agentdb_hierarchical-recall': recallReturning(stored, actor),
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_causal-edge': () => ({ success: true }),
     'claims_list': activeClaimFor(actor, 'issue-1'),
@@ -353,7 +374,7 @@ test('applyApprovalTransition (submit, no witness): persists the transition, upd
   const actor = baseActor({ id: 'om-submitter' });
   const approver = baseActor({ id: 'om-approver' });
   const { calls, config } = mockBridge({
-    'agentdb_hierarchical-recall': recallReturning(original),
+    'agentdb_hierarchical-recall': recallReturning(original, actor),
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_causal-edge': () => ({ success: true }),
     'claims_handoff': () => ({ success: true }),
@@ -395,7 +416,7 @@ test('applyApprovalTransition (approve, with witness): wires the witness ref int
   const pendingIssue = baseIssue({ approvalState: 'pending', approvalTransitionRef: 'transition-submit', status: 'open' });
   const approver = baseActor({ id: 'om-approver' });
   const { calls, config } = mockBridge({
-    'agentdb_hierarchical-recall': recallReturning(pendingIssue),
+    'agentdb_hierarchical-recall': recallReturning(pendingIssue, approver),
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_causal-edge': () => ({ success: true }),
     'claims_accept-handoff': () => ({ success: true }),
@@ -451,7 +472,7 @@ test('applyApprovalTransition (reject): records a rejected_by edge, not approved
   const pendingIssue = baseIssue({ approvalState: 'pending', approvalTransitionRef: 'transition-submit' });
   const approver = baseActor({ id: 'om-approver' });
   const { calls, config } = mockBridge({
-    'agentdb_hierarchical-recall': recallReturning(pendingIssue),
+    'agentdb_hierarchical-recall': recallReturning(pendingIssue, approver),
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_causal-edge': () => ({ success: true }),
     'claims_accept-handoff': () => ({ success: true }),
@@ -488,7 +509,7 @@ test('applyApprovalTransition (reject) throws when deps.handoffTo is missing, af
   const pendingIssue = baseIssue({ approvalState: 'pending', approvalTransitionRef: 'transition-submit' });
   const approver = baseActor({ id: 'om-approver' });
   const { calls, config } = mockBridge({
-    'agentdb_hierarchical-recall': recallReturning(pendingIssue),
+    'agentdb_hierarchical-recall': recallReturning(pendingIssue, approver),
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_causal-edge': () => ({ success: true }),
     'claims_accept-handoff': () => ({ success: true }),
