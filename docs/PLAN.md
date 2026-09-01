@@ -543,13 +543,20 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
      (comms registration/human-join never took an actor param to forge in
      the first place — also a design-doc/reality mismatch, found and
      documented in the comms file's own header); both files carry a
-     detailed code comment explaining why. **Recommendation for
-     architect/team-lead**: either scope the human-block decision
-     per-call-site (block approval-decision/heartbeat forgery for humans,
-     which matters; leave onboarding/self-service consent on the
-     pre-existing weaker check, which doesn't have an alternative until
-     Phase 2) or accept this as Phase 2's own prerequisite scope and revisit
-     both sites there.
+     detailed code comment explaining why.
+   - **Resolved (2026-09-01, team-lead, `ACTOR-IDENTITY-VERIFICATION.md` §4,
+     commit `35a2a15`)**: the recommendation above was decided as the
+     per-call-site scoping option — "block" applies only to the three sites
+     that exercise authority on behalf of the company or grant
+     access/effect visible to another party (approval decisions, comms-room
+     registration, heartbeat creation); `setInteractionProfileConsent`
+     (strictly self-referential, no other party affected) keeps its
+     pre-existing `actor.id === orgMemberId` check, with the residual
+     forgery risk there tracked as an accepted, pre-existing gap until
+     Phase 2's real human-issuance work closes it. `mintHumanCommsAccess`
+     needed no decision either way — it never had an actor param to
+     retrofit or block. See the Phase 2 entry above, updated in lockstep
+     (commit `717a649`).
    - **One necessary deviation from a literal reading of §5 items 1-2**: the
      design's own text ("hands \[the newly-minted credential\] back to the
      calling session for the *rest of that same flow* — e.g., threaded into
@@ -608,6 +615,26 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
      mint. Genuinely ambiguous in the source document; implemented the
      interpretation that doesn't reopen the gap, flagged rather than guessed
      silently.
+   - **Post-delivery security fix (commit `ebb1983`)**: two real issues found
+     on top of the coder's own 12 passing tests. (1) The coder's own
+     most-important regression test — "the exact scenario security found"
+     (a forged credential naming a different `orgMemberId` than the real
+     submitter) — was silently testing nothing, because a shared test
+     helper was missing its `...overrides` spread, so every fixture came
+     back with hardcoded default field values regardless of what the test
+     asked for; fixed the helper, then re-verified the real production fix
+     actually works once the test genuinely exercises it (it does). (2)
+     `persistHeartbeatSchedule`'s authorization gate (§5 item 4) only
+     covered the CREATE path, leaving RESUME (paused → active) completely
+     unauthenticated — `fireHeartbeat` itself never resumes a schedule, so
+     any caller reaching resume is unambiguously acting on a human/operator
+     decision, not internal bookkeeping, and needed the same credential
+     check as create. Fixed by requiring authorization specifically on the
+     paused→active transition. Also made `checkAuthorizationGuard`'s
+     cross-company check explicit (previously incidental) rather than
+     relying on it falling out of other checks, mirroring
+     `applyApprovalTransition`'s equivalent explicit check. 209 tests total
+     (up from 207), `tsc --strict` clean.
 4. **Phase 3 — ruclip-metaharness**: build-time bench suite, `score`/`genome`
    gates against the ruClip codebase. **Amended 2026-09-01**: no longer
    includes a runtime bench suite, `redblue`, or `flywheel` — that scope moved
@@ -718,6 +745,23 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
      team-lead's explicit instruction, no shortcuts given the domain's
      sensitivity even though this particular slice has no external PII
      surface.
+   - **Post-delivery security fix (commit `d8111e4`)**: the design's central
+     "no other read path exists" guarantee (§2) was false as first shipped —
+     `recallInteractionProfile`, the low-level primitive
+     `recallOwnInteractionProfile`/`recallInteractionProfileForComposition`
+     build on, was an exported, unrestricted function any code in the
+     codebase could import and call with an arbitrary `orgMemberId`,
+     bypassing both of the designed access paths entirely. Fixed by moving
+     it and its two sibling low-level primitives out of
+     `store/agentdb-adapter.ts` into `employee-augmentation/
+     interaction-profile.ts` (their only legitimate caller's module) as
+     private, unexported functions — the unsafe shape no longer exists to
+     be imported, matching this design's own stated philosophy (§2: "not
+     just that it's checked" but that the unsafe shape doesn't exist).
+     Separately, a real actor-forgery gap in `setInteractionProfileConsent`
+     was flagged during this pass as systemic — not scoped to this one
+     function — and routed to team-lead, who escalated it to
+     `ACTOR-IDENTITY-VERIFICATION.md` below rather than patching it locally.
 8. **Phase 7 (optional)** — LatentMesh edge-resilience integration for
    agents operating without cloud connectivity, if a concrete use case
    emerges (e.g. via `ruflo-iot-cognitum`).
