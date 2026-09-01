@@ -438,7 +438,26 @@ GCP cron — reuse verbatim.
 7. **Phase 6 (optional)** — LatentMesh edge-resilience integration for
    agents operating without cloud connectivity, if a concrete use case
    emerges (e.g. via `ruflo-iot-cognitum`).
-8. **Throughout** — test/validate/secure/benchmark/optimize each phase via
+8. **Phase 1f (NEW, 2026-09-01, not started) — `radio-moe` cross-provider
+   agent-dispatch**: route an agent-employee's actual dispatched work (the
+   `fireHeartbeat` agent-assignee wake step, `HEARTBEATS-AND-COMMS.md` §3
+   step 4) through `radio-moe@0.3.1`'s `Gate`/`Peer`/`Mesh` and its real
+   backend adapters (`openRouterExpert`, `geminiExpert`,
+   `CommandStreamingExpert` for `claude`/`codex`) — the correct, verified
+   match for ADR-0001 amendment 7a's "cross-provider agent adapter" claim
+   (confirmed by reading the published package's real `dist/index.d.ts` +
+   README, not assumed). Numbered against Phase 1 rather than the Phase
+   2-6 sequence because it's a follow-on to Phase 1's control-plane core,
+   not an independent initiative. Explicitly **not** the same package as
+   `NotificationChannel`'s `agentbbs` backend (`HEARTBEATS-AND-COMMS.md`
+   §5) — `radio-moe` is request-routing/governance across LLM backends,
+   not event/notification delivery; conflating the two would be the
+   mistake this note exists to prevent. Not started — no code exists for
+   this yet, distinct from the `agentradio-notification-channel.ts` stub
+   in the codebase today, which implements the *wrong* interface for this
+   package and is being corrected separately (see Phase 1's delivery
+   notes above).
+9. **Throughout** — test/validate/secure/benchmark/optimize each phase via
    the standard swarm protocol in this repo's `CLAUDE.md`, using
    `ruflo-testgen`, `ruflo-security-audit`, `metaharness security_bench`, and
    `ruflo-cost-tracker` for spend gates.
