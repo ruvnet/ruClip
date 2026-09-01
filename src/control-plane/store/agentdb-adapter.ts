@@ -70,13 +70,20 @@ import {
   assertValidApprovalTransition,
 } from '../schema/validation.js';
 import { transitionApprovalState, isLegalApprovalTransition } from '../approval/transition-approval-state.js';
+import {
+  verifyActorHoldsClaim,
+  handoffClaim,
+  acceptClaimHandoff,
+  ClaimAuthorizationError,
+} from '../authorization/claims-authorization.js';
+import { AgentDbBridgeError, callTool, type AgentDbAdapterConfig } from './bridge-client.js';
 
-export class AgentDbBridgeError extends Error {
-  constructor(message: string, public readonly cause?: unknown) {
-    super(message);
-    this.name = 'AgentDbBridgeError';
-  }
-}
+// Re-exported so every existing `from '../store/agentdb-adapter.js'` import
+// of these three names keeps working unchanged — see bridge-client.ts's
+// header for why they now live in their own dependency-free module (the
+// real circular-import failure this avoids, discovered at runtime, not by
+// tsc).
+export { AgentDbBridgeError, callTool, type AgentDbAdapterConfig };
 
 /**
  * Raised by persistIssue's Guard A/B (APPROVAL-GATE.md §3) when a write
@@ -88,64 +95,6 @@ export class ApprovalGateViolationError extends AgentDbBridgeError {
   constructor(message: string) {
     super(message);
     this.name = 'ApprovalGateViolationError';
-  }
-}
-
-export interface AgentDbAdapterConfig {
-  /** Base URL of a `ruflo mcp start -t http` server. Defaults to RUCLIP_AGENTDB_BRIDGE_URL or http://localhost:3000. */
-  baseUrl?: string;
-  fetchImpl?: typeof fetch;
-}
-
-function resolveBaseUrl(config?: AgentDbAdapterConfig): string {
-  return config?.baseUrl ?? process.env.RUCLIP_AGENTDB_BRIDGE_URL ?? 'http://localhost:3000';
-}
-
-let rpcIdCounter = 0;
-
-async function callTool<T = unknown>(
-  name: string,
-  args: Record<string, unknown>,
-  config?: AgentDbAdapterConfig,
-): Promise<T> {
-  const fetchFn = config?.fetchImpl ?? fetch;
-  const baseUrl = resolveBaseUrl(config);
-  let response: Response;
-  try {
-    response = await fetchFn(`${baseUrl}/rpc`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: `ruclip-${Date.now()}-${rpcIdCounter++}`,
-        method: 'tools/call',
-        params: { name, arguments: args },
-      }),
-    });
-  } catch (err) {
-    throw new AgentDbBridgeError(
-      `Could not reach AgentDB MCP bridge at ${baseUrl}/rpc — is 'ruflo mcp start -t http' running?`,
-      err,
-    );
-  }
-  if (!response.ok) {
-    throw new AgentDbBridgeError(`AgentDB bridge HTTP ${response.status} calling ${name}`);
-  }
-  const payload = (await response.json()) as {
-    error?: { code: number; message: string };
-    result?: { content?: Array<{ type: string; text: string }> };
-  };
-  if (payload.error) {
-    throw new AgentDbBridgeError(`AgentDB tool '${name}' failed: ${payload.error.message}`);
-  }
-  const text = payload.result?.content?.[0]?.text;
-  if (typeof text !== 'string') {
-    throw new AgentDbBridgeError(`AgentDB tool '${name}' returned no content`);
-  }
-  try {
-    return JSON.parse(text) as T;
-  } catch (err) {
-    throw new AgentDbBridgeError(`AgentDB tool '${name}' returned non-JSON content`, err);
   }
 }
 
@@ -466,6 +415,66 @@ function checkBudgetImpactFrozenGuard(issue: Issue, stored: Issue | null): void 
 }
 
 /**
+ * Guard C (AUTHORIZATION.md §6): closes the actor-forgery vector Guard A
+ * leaves open — Guard A validates an ApprovalTransition's shape but not
+ * whether the actorId inside it is genuine. No-op when approvalTransition
+ * is undefined (no approval-state change this write, nothing to
+ * authorize). Otherwise requires `authorization`, checks the supplied actor
+ * matches the transition and is active, re-verifies the self-approval
+ * invariant against the PERSISTED submit transition (never a
+ * caller-supplied object — recalled via recallApprovalTransition), then
+ * calls verifyActorHoldsClaim as the unforgeable external check.
+ */
+async function checkAuthorizationGuard(
+  companyId: string,
+  issue: Issue,
+  stored: Issue | null,
+  approvalTransition: ApprovalTransition | undefined,
+  authorization: { actor: OrgMember } | undefined,
+  config?: AgentDbAdapterConfig,
+): Promise<void> {
+  if (approvalTransition === undefined) return;
+
+  if (!authorization) {
+    throw new ApprovalGateViolationError(
+      `Issue '${issue.id}' approvalState change requires authorization.actor to be supplied`,
+    );
+  }
+  const { actor } = authorization;
+  if (actor.id !== approvalTransition.actorId) {
+    throw new ApprovalGateViolationError(
+      `authorization.actor.id '${actor.id}' does not match approvalTransition.actorId '${approvalTransition.actorId}'`,
+    );
+  }
+  if (actor.status !== 'active') {
+    throw new ApprovalGateViolationError(
+      `Actor '${actor.id}' cannot be authorized for an approval decision while status is '${actor.status}'`,
+    );
+  }
+
+  if (
+    (approvalTransition.action === 'approve' || approvalTransition.action === 'reject') &&
+    stored?.approvalTransitionRef
+  ) {
+    const submitTransition = await recallApprovalTransition(
+      companyId,
+      issue.goalId,
+      issue.id,
+      stored.approvalTransitionRef,
+      config,
+    );
+    if (submitTransition && submitTransition.actorId === actor.id) {
+      throw new ClaimAuthorizationError(
+        `Actor '${actor.id}' submitted issue '${issue.id}' for approval and cannot also ${approvalTransition.action} ` +
+          `it (self-approval, verified against the persisted submit record — not a caller-supplied object)`,
+      );
+    }
+  }
+
+  await verifyActorHoldsClaim(issue.id, actor, config);
+}
+
+/**
  * Persist an issue at the tier its status implies. When `previousStatus` is
  * given and its tier differs from the new status's tier, the stale copy is
  * removed from the old tier in the same call — DOMAIN-MODEL.md §2.1's "an
@@ -473,21 +482,25 @@ function checkBudgetImpactFrozenGuard(issue: Issue, stored: Issue | null): void 
  *
  * Before any write, recalls the currently-stored issue and runs Guard A
  * (approvalState may not change without a matching, re-validated
- * ApprovalTransition) and Guard B (budgetImpact is frozen once the issue
- * leaves 'draft') — APPROVAL-GATE.md §3. Both guards throw
- * ApprovalGateViolationError and make no writes on failure.
+ * ApprovalTransition), Guard B (budgetImpact is frozen once the issue
+ * leaves 'draft') — APPROVAL-GATE.md §3 — and Guard C (the actor named in
+ * the transition is genuine and currently holds the issue's claim per
+ * ruflo's claims system) — AUTHORIZATION.md §6. All three throw and make
+ * no writes on failure.
  */
 export async function persistIssue(
   companyId: string,
   issue: Issue,
   previousStatus?: Issue['status'],
   approvalTransition?: ApprovalTransition,
+  authorization?: { actor: OrgMember },
   config?: AgentDbAdapterConfig,
 ): Promise<void> {
   assertValidIssue(issue);
   const stored = await recallIssue(companyId, issue.goalId, issue.id, config);
   checkApprovalStateGuard(issue, stored, approvalTransition);
   checkBudgetImpactFrozenGuard(issue, stored);
+  await checkAuthorizationGuard(companyId, issue, stored, approvalTransition, authorization, config);
 
   const key = issueKey(companyId, issue.goalId, issue.id);
   const tier = tierForIssueStatus(issue.status);
@@ -530,14 +543,30 @@ export async function recallIssue(
   );
 }
 
+/** Parallel to recallIssue, keyed via approvalTransitionKey — used by Guard C to re-verify self-approval against persisted state. */
+export async function recallApprovalTransition(
+  companyId: string,
+  goalId: string,
+  issueId: string,
+  transitionId: string,
+  config?: AgentDbAdapterConfig,
+): Promise<ApprovalTransition | null> {
+  const key = approvalTransitionKey(companyId, goalId, issueId, transitionId);
+  return (
+    (await recallByKey<ApprovalTransition>(key, 'working', config)) ??
+    (await recallByKey<ApprovalTransition>(key, 'episodic', config))
+  );
+}
+
 /**
  * Orchestrates one approval-state-machine step end to end (APPROVAL-GATE.md
- * §4): computes the transition (pure, throws before any I/O if illegal),
+ * §4, AUTHORIZATION.md §8): claims_* authorization choreography, THEN
+ * computes the transition (pure, throws before any I/O if illegal),
  * optionally witnesses it, persists the ApprovalTransition record, records
  * the approved_by/rejected_by causal edge, then persists the updated Issue
- * through the hardened persistIssue (which re-validates the transition via
- * Guard A). `deps.witness` is optional — when omitted, `transition.witnessRef`
- * stays null (a tracked gap, see schema/witness.ts and APPROVAL-GATE.md §5).
+ * through the hardened persistIssue (which re-validates via Guards A/B/C).
+ * `deps.witness` is optional — when omitted, `transition.witnessRef` stays
+ * null (a tracked gap, see schema/witness.ts and APPROVAL-GATE.md §5).
  */
 export async function applyApprovalTransition(
   companyId: string,
@@ -545,9 +574,22 @@ export async function applyApprovalTransition(
   action: ApprovalAction,
   actor: OrgMember,
   previousTransition: ApprovalTransition | null,
-  deps: { witness?: WitnessHook; reason?: string },
+  deps: { witness?: WitnessHook; reason?: string; approver?: OrgMember; handoffTo?: OrgMember },
   config?: AgentDbAdapterConfig,
 ): Promise<{ issue: Issue; transition: ApprovalTransition }> {
+  // AUTHORIZATION.md §8 steps 1-2 — authorization choreography runs BEFORE
+  // any state-machine computation, so a failure here short-circuits before
+  // transitionApprovalState is ever called.
+  if (action === 'approve' || action === 'reject' || action === 'revise') {
+    await acceptClaimHandoff(issue.id, actor, config);
+  }
+  if (action === 'submit') {
+    if (!deps.approver) {
+      throw new ClaimAuthorizationError(`applyApprovalTransition: action 'submit' requires deps.approver`);
+    }
+    await handoffClaim(issue.id, actor, deps.approver, { reason: deps.reason, progress: 100 }, config);
+  }
+
   const { nextIssue, transition } = transitionApprovalState(issue, action, actor, previousTransition, {
     reason: deps.reason,
   });
@@ -583,7 +625,16 @@ export async function applyApprovalTransition(
     await recordCausalEdge(entityNodeId('issue', issue.id), entityNodeId('org-member', actor.id), relation, config);
   }
 
-  await persistIssue(companyId, nextIssue, issue.status, transition, config);
+  await persistIssue(companyId, nextIssue, issue.status, transition, { actor }, config);
+
+  // AUTHORIZATION.md §8 step 6 — hand the claim back to the original
+  // submitter after a legal reject, so they can accept and later revise.
+  if (action === 'reject') {
+    if (!deps.handoffTo) {
+      throw new ClaimAuthorizationError(`applyApprovalTransition: action 'reject' requires deps.handoffTo`);
+    }
+    await handoffClaim(issue.id, actor, deps.handoffTo, { reason: 'returned for revision' }, config);
+  }
 
   return { issue: nextIssue, transition };
 }

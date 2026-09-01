@@ -211,7 +211,7 @@ test(
       toState: 'draft',
     });
     await assert.rejects(
-      () => persistIssue('co-1', baseIssue({ approvalState: 'draft' }), undefined, nonsenseTransition, config),
+      () => persistIssue('co-1', baseIssue({ approvalState: 'draft' }), undefined, nonsenseTransition, undefined, config),
       ApprovalGateViolationError,
     );
     const storeCalls = calls.filter((c) => c.toolName === 'agentdb_hierarchical-store');
@@ -221,25 +221,36 @@ test(
 
 // --- applyApprovalTransition: witness failure leaves no partial writes ---
 
-test('applyApprovalTransition propagates a witness.record() rejection before persisting anything', async () => {
-  const original = baseIssue({ approvalState: 'draft', approvalTransitionRef: null, status: 'open' });
-  const { calls, config } = mockBridge({
-    'agentdb_hierarchical-recall': () => ({ results: [] }),
-    'agentdb_hierarchical-store': () => ({ success: true }),
-    'agentdb_causal-edge': () => ({ success: true }),
-  });
-  const actor = baseActor({ id: 'om-submitter' });
-  const failingWitness: WitnessHook = {
-    record: async () => {
-      throw new Error('witness service unavailable');
-    },
-  };
+test(
+  'applyApprovalTransition propagates a witness.record() rejection before persisting the ApprovalTransition or Issue ' +
+    '(the AUTHORIZATION.md §8 claims_handoff step for submit necessarily runs before the witness call, so it is not ' +
+    'included in "nothing persisted" — no hierarchical-store/causal-edge write happens)',
+  async () => {
+    const original = baseIssue({ approvalState: 'draft', approvalTransitionRef: null, status: 'open' });
+    const actor = baseActor({ id: 'om-submitter' });
+    const approver = baseActor({ id: 'om-approver' });
+    const { calls, config } = mockBridge({
+      'agentdb_hierarchical-recall': () => ({ results: [] }),
+      'agentdb_hierarchical-store': () => ({ success: true }),
+      'agentdb_causal-edge': () => ({ success: true }),
+      'claims_handoff': () => ({ success: true }),
+    });
+    const failingWitness: WitnessHook = {
+      record: async () => {
+        throw new Error('witness service unavailable');
+      },
+    };
 
-  await assert.rejects(() =>
-    applyApprovalTransition('co-1', original, 'submit', actor, null, { witness: failingWitness }, config),
-  );
-  assert.equal(calls.length, 0, 'no bridge call should happen when the witness hook rejects');
-});
+    await assert.rejects(() =>
+      applyApprovalTransition('co-1', original, 'submit', actor, null, { witness: failingWitness, approver }, config),
+    );
+    assert.deepEqual(
+      calls.map((c) => c.toolName),
+      ['claims_handoff'],
+      'the pre-transition claims_handoff runs, but no store/delete/causal-edge write should happen once the witness hook rejects',
+    );
+  },
+);
 
 // --- assertValidIssue: approvalTransitionRef format is boundary-checked too ---
 

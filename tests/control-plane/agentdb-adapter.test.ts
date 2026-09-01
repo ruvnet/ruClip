@@ -147,7 +147,7 @@ test('persistIssue on first creation (no previousStatus) does not touch hierarch
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_causal-edge': () => ({ success: true }),
   });
-  await persistIssue('co-1', baseIssue({ status: 'open' }), undefined, undefined, config);
+  await persistIssue('co-1', baseIssue({ status: 'open' }), undefined, undefined, undefined, config);
   const toolNames = calls.map((c) => c.toolName);
   assert.ok(!toolNames.includes('agentdb_hierarchical-delete'));
   const storeCall = calls.find((c) => c.toolName === 'agentdb_hierarchical-store');
@@ -162,7 +162,7 @@ test('persistIssue closing an issue (open -> done) re-stores to episodic and del
     'agentdb_causal-edge': () => ({ success: true }),
   });
   const closedIssue = baseIssue({ status: 'done', closedAt: now, budgetImpact: 0 });
-  await persistIssue('co-1', closedIssue, 'open', undefined, config);
+  await persistIssue('co-1', closedIssue, 'open', undefined, undefined, config);
 
   const storeCall = calls.find((c) => c.toolName === 'agentdb_hierarchical-store');
   const deleteCall = calls.find((c) => c.toolName === 'agentdb_hierarchical-delete');
@@ -179,7 +179,7 @@ test('persistIssue does not call hierarchical-delete when previousStatus maps to
     'agentdb_causal-edge': () => ({ success: true }),
   });
   // open -> in_progress: both 'working' tier.
-  await persistIssue('co-1', baseIssue({ status: 'in_progress' }), 'open', undefined, config);
+  await persistIssue('co-1', baseIssue({ status: 'in_progress' }), 'open', undefined, undefined, config);
   assert.ok(!calls.some((c) => c.toolName === 'agentdb_hierarchical-delete'));
 });
 
@@ -190,7 +190,7 @@ test('persistIssue with a parentId checks for a parent_of cycle before writing t
     'agentdb_graph-query': () => ({ nodes: [] }),
     'agentdb_causal-edge': () => ({ success: true }),
   });
-  await persistIssue('co-1', baseIssue({ parentId: 'issue-parent' }), undefined, undefined, config);
+  await persistIssue('co-1', baseIssue({ parentId: 'issue-parent' }), undefined, undefined, undefined, config);
   const toolNames = calls.map((c) => c.toolName);
   // Guard A/B's recallIssue read (working tier, then episodic fallback) runs
   // first; belongs_to (goal) needs no cycle check, parent_of does.
@@ -219,7 +219,7 @@ test('persistIssue refuses a parent_of edge that would close a genuine (non-self
     'agentdb_causal-edge': () => ({ success: true }),
   });
   const issue = baseIssue({ parentId: 'issue-parent', assigneeId: 'om-9' });
-  await assert.rejects(() => persistIssue('co-1', issue, undefined, undefined, config), AgentDbBridgeError);
+  await assert.rejects(() => persistIssue('co-1', issue, undefined, undefined, undefined, config), AgentDbBridgeError);
   const toolNames = calls.map((c) => c.toolName);
   // Guard A/B read succeeded (stored=null), belongs_to succeeded, then the
   // cycle check ran and rejected before any parent_of/assigned_to edge write
@@ -383,7 +383,7 @@ test(
       approvalTransitionRef: null,
       closedAt: now,
     });
-    await persistIssue('co-1', issue, 'in_progress', undefined, config);
+    await persistIssue('co-1', issue, 'in_progress', undefined, undefined, config);
 
     const storeCall = calls.find((c) => c.toolName === 'agentdb_hierarchical-store');
     assert.ok(storeCall, 'expected a hierarchical-store call');

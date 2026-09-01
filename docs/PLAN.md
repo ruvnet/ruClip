@@ -222,6 +222,68 @@ nightly scheduler, no new GCP cron — reuse verbatim.
      `applyApprovalTransition` entry point), not a new one — recorded
      separately here because it's a concrete forgery vector, not just a
      missing policy check.
+   - **Delivered this iteration** (Phase 1d, `docs/design/AUTHORIZATION.md`
+     — closes both gaps 1c recorded: the `claims_handoff`/
+     `claims_accept-handoff` wiring, and the actor-forgery vector in Guard
+     A): a new `src/control-plane/authorization/claims-authorization.ts`
+     wraps ruflo's real `claims_claim`/`claims_handoff`/
+     `claims_accept-handoff`/`claims_list`/`claims_board` MCP tools —
+     `claims_grant`/`claims_check`, referenced only in every `claims_*`
+     tool's shared boilerplate description, do not exist as real tools and
+     are not used. `persistIssue` gained a third guard, **Guard C**
+     (`checkAuthorizationGuard`): no-op when no `approvalTransition` is
+     supplied; otherwise requires an `authorization: {actor}` parameter,
+     checks `actor.id`/`actor.status` against the transition, re-verifies
+     the self-approval invariant against the **persisted** submit-transition
+     record (`recallApprovalTransition`, never a caller-supplied object —
+     the specific fix for the forgery vector), and calls the new
+     `verifyActorHoldsClaim` as an unforgeable live check against ruflo's
+     claims system. `applyApprovalTransition` now runs the full claims
+     choreography (`claims_accept-handoff` for approve/reject/revise before
+     any state-machine computation; `claims_handoff` after a legal submit
+     or reject) per a new `deps.approver`/`deps.handoffTo`. 142 tests total
+     (up from 106), `tsc --strict` clean.
+   - **Two real deviations from the design doc, found only by running the
+     code, not by type-checking it** — both documented in the affected
+     files' own comments: (1) `AUTHORIZATION.md`'s "export `callTool`, a
+     one-line change, no need for a separate bridge-client module" turned
+     out to be insufficient — `claims-authorization.ts` needs `callTool`/
+     `AgentDbBridgeError` from `agentdb-adapter.ts`, which needs
+     `verifyActorHoldsClaim` etc. back from `claims-authorization.ts`, a
+     genuine two-way cycle. `tsc` accepted it, but the compiled output threw
+     `ReferenceError: Cannot access 'AgentDbBridgeError' before
+     initialization` — a `class X extends Y` heritage clause evaluates
+     immediately at module-load time, unlike a function body, so the cycle
+     broke at runtime. Fixed by extracting `AgentDbBridgeError`/
+     `AgentDbAdapterConfig`/`callTool` into a new dependency-free
+     `store/bridge-client.ts` that both files import from (re-exported from
+     `agentdb-adapter.ts`, so no external import path changed). (2)
+     `verifyActorHoldsClaim`'s `claims_list({claimant, status: 'active'})`
+     call (as specified) never finds the submitter during a `submit`
+     action's own `persistIssue`/Guard C check: `applyApprovalTransition`
+     calls `claims_handoff` (which the real `claims-tools.ts` flips the
+     claim's `status` to `'handoff-pending'`, not `'active'`) *before*
+     `persistIssue` runs, so a strict `status: 'active'` filter always
+     misses — every `submit` failed against a faithful stateful simulation
+     of the real tool. Confirmed by reading `claims-tools.ts`'s
+     `claims_handoff` handler directly, not by guessing. Fixed by dropping
+     the `status` filter from the `claims_list` call and instead accepting
+     client-side any record naming the actor as claimant with status
+     `'active'` OR `'handoff-pending'` (both mean "this actor is still the
+     recorded claimant" per the design's own §4 reasoning — only
+     `accept-handoff` moves the claimant, not `status` alone).
+   - **Still remaining**: `claims_claim` is not wired into issue
+     creation/assignment (`AUTHORIZATION.md` §5 — the natural extension
+     point is the existing `assigned_to` causal-edge write in
+     `persistIssue`, not built this slice); the real `claims_list`/
+     `claims_board` response shape is verified only by reading
+     `v3/@claude-flow/cli/src/mcp-tools/claims-tools.ts` in the ruflo
+     monorepo directly, not against a live running bridge — the
+     `claims_board` fallback path this repo's own tests exercise has never
+     actually run against a real `ruflo mcp start -t http` process; the
+     real `WitnessHook` implementation (ADR-103) is still unbuilt (Phase 1c
+     gap, unchanged); budget-gated heartbeats and `agentbbs` wiring remain
+     not started.
 3. **Phase 2 — Dashboard**: Claude Artifact-based company board (capabilities:
    live state, multi-viewer, saved documents).
 4. **Phase 3 — ruclip-metaharness**: build-time + runtime bench suites,
