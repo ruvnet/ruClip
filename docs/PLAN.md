@@ -442,6 +442,32 @@ GCP cron — reuse verbatim.
      TextFrame`) — is documented in `HEARTBEATS-AND-COMMS.md` §5 for anyone
      revisiting this later; radio-moe's real separate role (cross-provider
      agent-work dispatch) is unchanged and still tracked as Phase 1f below.
+   - **Two post-delivery security passes on this slice (commits `467c4d9`,
+     `732c2e1`)**, same recurring bug class this repo keeps catching
+     ("trust caller-supplied data instead of recalling/enforcing ground
+     truth"): (1) `registerCompanyCommsRoom` built its AgentDB key by raw
+     string interpolation with no `assertSafeId` check, reintroducing the
+     exact key-collision vulnerability class `13ac549` closed repo-wide — a
+     crafted `companyId` could collide byte-for-byte with `orgMemberKey`
+     and silently overwrite a real `OrgMember` record. Fixed by moving
+     `assertSafeId`/`SAFE_ID_PATTERN` into `store/bridge-client.ts` (the
+     shared dependency-free leaf every key-building module now imports
+     from) and calling it first in `registerCompanyCommsRoom`. (2)
+     `persistHeartbeatSchedule`'s `actor` parameter was optional with
+     nothing distinguishing a legitimate system re-persist (`fireHeartbeat`'s
+     own bookkeeping, which correctly omits `actor`) from a hostile caller
+     creating a brand-new schedule and omitting `actor` to dodge the
+     "requires a live claim" invariant `HEARTBEATS-AND-COMMS.md` §6 states
+     — fixed the same way as the earlier Guard A create-path bug: recall
+     the stored schedule first, and a `null` result (genesis create) now
+     hard-requires `actor`. (3) A third, narrower pass (`732c2e1`) found the
+     ed25519-signed frame `notificationFrame()` built for signing omitted
+     `event.occurredAt`, so `verifySignedNotification` returned `true` even
+     when a notification's timestamp had been altered post-signing —
+     fixed by folding `occurredAt` into the signed `value` object (single
+     point of truth between signing and verification). 181 tests total (up
+     from 177), `tsc --strict` clean, verified against the real installed
+     `radio-moe@0.3.1` package (not a mock).
 3. **Phase 2 — Dashboard**: Claude Artifact-based company board (capabilities:
    live state, multi-viewer, saved documents).
 4. **Phase 3 — ruclip-metaharness**: build-time bench suite, `score`/`genome`
@@ -483,10 +509,12 @@ GCP cron — reuse verbatim.
    §5) — `radio-moe` is request-routing/governance across LLM backends,
    not event/notification delivery; conflating the two would be the
    mistake this note exists to prevent. Not started — no code exists for
-   this yet, distinct from the `agentradio-notification-channel.ts` stub
-   in the codebase today, which implements the *wrong* interface for this
-   package and is being corrected separately (see Phase 1's delivery
-   notes above).
+   this yet. (Stale as of the "round 5" delivery note above: the
+   `agentradio-notification-channel.ts` stub this bullet originally
+   contrasted against has since been deleted outright, not just corrected
+   — `radio-moe`'s only role in the shipped code is the signing layer
+   inside `AgentBbsNotificationChannel`. This Phase 1f item is unaffected;
+   it was already describing a distinct, not-yet-built integration point.)
 9. **Throughout** — test/validate/secure/benchmark/optimize each phase via
    the standard swarm protocol in this repo's `CLAUDE.md`, using
    `ruflo-testgen`, `ruflo-security-audit`, `metaharness security_bench`, and
