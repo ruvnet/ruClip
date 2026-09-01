@@ -217,23 +217,25 @@ anywhere in ruClip today** (Phase 2's dashboard, still unbuilt, is the
 natural home for it). Building a full identity-provider integration is its
 own project, out of scope for a "design the missing primitive" task.
 
-**This is a real decision point, not something I'll resolve unilaterally**:
-until human issuance exists, the four call sites have two options for a
-`kind: 'human'` actor, and the choice is a security-posture call, not an
-implementation detail —
-(a) **block**: any call where the resolved `OrgMember.kind === 'human'`
-and no valid `ActorCredential` is presented is refused outright (no
-approval decisions, no consent changes, etc. can be attributed to a human
-until real issuance ships) — safest, but freezes human-initiated actions
-on all four call sites until Phase 2's dashboard/auth lands; or
-(b) **accept named interim risk**: fall back to today's weaker
-`verifyActorHoldsClaim`-plus-self-declared-object check *for humans only*,
-explicitly logged/flagged as a known, temporary, human-only exposure (the
-exact self-approval-forgery risk security just found stays open for
-humans, closed for agents) until real issuance ships.
-I'd lean toward (a) given the sensitivity already established for this
-whole domain, but this needs your and security's sign-off before it's
-final — flagging it rather than deciding it here.
+**Decided (2026-09-01, team-lead): option (a), block.** Until real human
+credential issuance exists (Phase 2's dashboard/auth), any call where the
+resolved `OrgMember.kind === 'human'` and no valid `ActorCredential` is
+presented is refused outright — `ActorIdentityVerificationError`, no
+fallback to the weaker pre-existing check. No approval decision, comms-room
+registration, heartbeat action, or consent change can be attributed to a
+human actor until real issuance ships. Fail closed for humans specifically,
+not just a documented risk — matching the fail-closed discipline this
+domain has held throughout. Costs nothing functionally today: there is no
+dashboard/login flow for a human to exercise any of these four paths
+through yet anyway, so blocking changes no currently-working behavior.
+
+**Structural consequence, recorded so it isn't rediscovered as a surprise**:
+this makes real human authentication/login a **hard prerequisite for
+Phase 2 (dashboard)**, not something to design later — `docs/PLAN.md`'s
+Phase 2 entry now states this explicitly. Phase 2's own design doc, when
+written, must solve human credential issuance as its first concern, the
+same way this document solved agent issuance via `claims_accept-handoff`
+succeeding.
 
 ## 5. Retrofit — the four call sites
 
@@ -284,8 +286,10 @@ for every `kind: 'agent'` OrgMember, immediately, chaining off the
 already-real `claims_accept-handoff` event.
 
 **Remains open, named not hidden**:
-- Human issuance (§4) — needs your/security's call on block-vs-interim-risk
-  before this design is fully closed for humans.
+- Human issuance (§4) — resolved as "block" (decided), but the actual
+  issuance mechanism itself is still unbuilt; blocking is a fail-closed
+  placeholder, not a solution. Real human credential issuance is now a
+  named prerequisite for Phase 2.
 - `radio-moe` becomes a hard runtime dependency for this mechanism — worth
   confirming that's an acceptable posture given its "research-prototype"
   status (`ADR-0001` amendment 7a), separately from its already-accepted
@@ -303,9 +307,7 @@ already-real `claims_accept-handoff` event.
 
 ## 7. What Phase (coder) implements
 
-Only after the human-issuance decision (§4) comes back — please hold this
-one for my go-ahead on that specific point before starting, everything
-else in this document is ready to implement as soon as that's resolved:
+Decision locked (§4) — ready to implement:
 
 - `src/control-plane/authorization/actor-credential.ts` —
   `ActorCredential`, `ActorIdentityVerificationError`,
@@ -322,13 +324,19 @@ else in this document is ready to implement as soon as that's resolved:
 - New tests: a forged-`orgMemberId` credential is rejected (wrong
   signature), an expired credential is rejected, a replayed nonce is
   rejected, an unadmitted issuer key is rejected even with an internally
-  valid signature, and — the regression test that matters most — the
-  exact scenario security found (approve/reject with a credential for a
-  *different* `orgMemberId` than the one that submitted) is now blocked.
+  valid signature, a `kind: 'human'` `OrgMember` is refused on all four
+  call sites regardless of what's presented (the locked "block" decision,
+  §4 — no fallback path should exist in the code to fall back to), and —
+  the regression test that matters most — the exact scenario security
+  found (approve/reject with a credential for a *different* `orgMemberId`
+  than the one that submitted) is now blocked.
+- `docs/PLAN.md`'s Phase 2 entry now names real human authentication/login
+  as a hard prerequisite (added alongside this design) — no code action
+  needed for that here, just keeping it in mind that this slice is why
+  that dependency exists.
 - Full pipeline (coder → tester → security → reviewer) once implemented,
   given what's at stake.
 
-Please implement verbatim once §4's open decision is resolved — and if the
-`radio-moe` hard-dependency posture or the block-vs-interim-risk call for
-humans changes anything materially during implementation, that's a signal
-to come back to this document and me, not to decide it silently.
+Please implement verbatim — if the `radio-moe` hard-dependency posture
+changes anything materially during implementation, that's a signal to come
+back to this document and me, not to decide it silently.

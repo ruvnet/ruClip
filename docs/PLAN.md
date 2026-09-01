@@ -486,7 +486,22 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
      from 177), `tsc --strict` clean, verified against the real installed
      `radio-moe@0.3.1` package (not a mock).
 3. **Phase 2 — Dashboard**: Claude Artifact-based company board (capabilities:
-   live state, multi-viewer, saved documents).
+   live state, multi-viewer, saved documents). **Hard prerequisite added
+   2026-09-01** (`docs/design/ACTOR-IDENTITY-VERIFICATION.md`): real human
+   authentication/login must be solved as this phase's first concern, not
+   designed later. `ActorCredential` verification (the cross-cutting fix
+   for the actor-forgery gap security found — closes it for agent
+   `OrgMember`s via `claims_accept-handoff`) has no working issuance path
+   for `kind: 'human'` actors — no dashboard/login flow exists anywhere in
+   ruClip yet to issue one through. All four actor-taking call sites
+   (approval decisions, comms-room registration, heartbeat creation,
+   `EmployeeInteractionProfile` consent) therefore **block** human-initiated
+   actions outright until this phase ships a real issuance mechanism — a
+   deliberate fail-closed choice, not an oversight, and it costs nothing
+   functionally today since no human-facing flow exercises these paths yet
+   either. Phase 2's own design doc must solve human credential issuance
+   first, the same way `ACTOR-IDENTITY-VERIFICATION.md` solved agent
+   issuance by chaining off `claims_accept-handoff` succeeding.
 4. **Phase 3 — ruclip-metaharness**: build-time bench suite, `score`/`genome`
    gates against the ruClip codebase. **Amended 2026-09-01**: no longer
    includes a runtime bench suite, `redblue`, or `flywheel` — that scope moved
