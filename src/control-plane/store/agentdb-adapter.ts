@@ -380,6 +380,12 @@ function checkApprovalStateGuard(
   approvalTransition: ApprovalTransition | undefined,
 ): void {
   if (stored === null) {
+    if (approvalTransition !== undefined) {
+      throw new ApprovalGateViolationError(
+        `New issue '${issue.id}' must not be created with an approvalTransition supplied — there is no prior ` +
+          `state for a transition to move from`,
+      );
+    }
     if (issue.approvalTransitionRef !== null) {
       throw new ApprovalGateViolationError(
         `New issue '${issue.id}' must not carry an approvalTransitionRef (got '${issue.approvalTransitionRef}')`,

@@ -22,19 +22,21 @@
  *    regression here would only be caught by a hand-crafted (not
  *    machine-produced) ApprovalTransition — exactly what's missing.
  *
- * 2. persistIssue's Guard A "create" branch (stored === null,
- *    src/control-plane/store/agentdb-adapter.ts checkApprovalStateGuard)
- *    never reads its own `approvalTransition` parameter — it only checks
- *    issue.approvalTransitionRef and issue.approvalState/budgetImpact. That
- *    means a caller can pass an arbitrary (even nonsensical) approvalTransition
- *    alongside a brand-new issue and persistIssue will silently accept the
- *    issue write while never persisting, validating, or otherwise
- *    acknowledging that transition object. This is legal per the current
- *    contract (only applyApprovalTransition persists transitions), but it's
- *    a real "the parameter is a no-op here" behavior worth locking down —
- *    if a future refactor made create-path Guard A start trusting an
- *    attacker-supplied approvalTransition instead of ignoring it, that would
- *    be a silent authorization-bypass regression.
+ * 2. [Security-stage hardening applied] persistIssue's Guard A "create" branch
+ *    (stored === null, src/control-plane/store/agentdb-adapter.ts
+ *    checkApprovalStateGuard) originally never read its own `approvalTransition`
+ *    parameter — it only checked issue.approvalTransitionRef and
+ *    issue.approvalState/budgetImpact, so a caller could pass an arbitrary
+ *    (even nonsensical) approvalTransition alongside a brand-new issue and
+ *    persistIssue would silently accept the issue write while never
+ *    persisting, validating, or acknowledging that transition object. That
+ *    was legal per the contract at the time (only applyApprovalTransition
+ *    persists transitions) but was a latent authorization-bypass risk: a
+ *    future refactor to the create branch could have started trusting the
+ *    ignored parameter instead of ignoring it, with nothing to catch the
+ *    regression. checkApprovalStateGuard now rejects any create-path call
+ *    that supplies an approvalTransition at all — see the test below, which
+ *    now locks down the rejection instead of the no-op.
  *
  * No live AgentDB instance is used — mockBridge as elsewhere.
  */
@@ -42,7 +44,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mockBridge } from '../support/mock-bridge.js';
 import { assertValidApprovalTransition, SchemaValidationError } from '../../src/control-plane/schema/validation.js';
-import { persistIssue, applyApprovalTransition } from '../../src/control-plane/store/agentdb-adapter.js';
+import {
+  persistIssue,
+  applyApprovalTransition,
+  ApprovalGateViolationError,
+} from '../../src/control-plane/store/agentdb-adapter.js';
 import type { Issue } from '../../src/control-plane/schema/issue.js';
 import type { OrgMember } from '../../src/control-plane/schema/org-member.js';
 import type { ApprovalTransition } from '../../src/control-plane/schema/approval-transition.js';
@@ -173,11 +179,22 @@ test('assertValidApprovalTransition accepts a non-empty witnessRef', () => {
   assert.doesNotThrow(() => assertValidApprovalTransition(transition));
 });
 
-// --- Guard A create-path: approvalTransition parameter is a no-op, not persisted ---
+// --- Guard A create-path: approvalTransition parameter must be rejected, not silently ignored ---
+//
+// Security-stage hardening (see /Users/cohen/Projects/ruClip commit history around
+// 13ac549's follow-up): the original version of this test documented that Guard A's
+// create branch silently ignored a supplied approvalTransition — neither validating
+// nor persisting it, just dropping it on the floor. That is a latent authorization-
+// bypass risk: a future refactor to the create branch could start trusting the
+// ignored parameter instead of ignoring it, with nothing here to catch the
+// regression. checkApprovalStateGuard now rejects any create-path call that supplies
+// an approvalTransition at all (there is no prior state for a transition to move
+// from), so the failure mode is a loud, immediate ApprovalGateViolationError instead
+// of a silent no-op — this test now locks down the rejection, not the no-op.
 
 test(
-  'persistIssue on a brand-new issue silently ignores a supplied approvalTransition ' +
-    '— it is neither validated nor persisted, only the issue document is written',
+  'persistIssue on a brand-new issue rejects any supplied approvalTransition ' +
+    '(there is no prior approvalState for a transition to move from) and writes nothing',
   async () => {
     const { calls, config } = mockBridge({
       'agentdb_hierarchical-recall': () => ({ results: [] }),
@@ -185,20 +202,20 @@ test(
       'agentdb_causal-edge': () => ({ success: true }),
     });
     // A transition that would itself be invalid if actually validated
-    // (fromState/toState swapped relative to any legal row) — proving Guard A's
-    // create branch truly never inspects it, not just that a valid-looking one
-    // happens to pass.
+    // (fromState/toState swapped relative to any legal row) — proving the create
+    // branch rejects on the mere presence of a transition, before even inspecting
+    // its shape.
     const nonsenseTransition = baseTransition({
       action: 'approve',
       fromState: 'approved',
       toState: 'draft',
     });
-    await assert.doesNotReject(() =>
-      persistIssue('co-1', baseIssue({ approvalState: 'draft' }), undefined, nonsenseTransition, config),
+    await assert.rejects(
+      () => persistIssue('co-1', baseIssue({ approvalState: 'draft' }), undefined, nonsenseTransition, config),
+      ApprovalGateViolationError,
     );
     const storeCalls = calls.filter((c) => c.toolName === 'agentdb_hierarchical-store');
-    assert.equal(storeCalls.length, 1, 'only the issue document should be stored, never the ignored transition');
-    assert.equal(storeCalls[0]?.args.key, 'ruclip:company:co-1:goal:goal-1:issue:issue-1');
+    assert.equal(storeCalls.length, 0, 'a rejected create must make no writes at all');
   },
 );
 
