@@ -32,6 +32,37 @@ export class AgentDbBridgeError extends Error {
   }
 }
 
+/**
+ * Shared here (not in store/agentdb-adapter.ts, where this originated) so
+ * every module that builds an AgentDB key/node-id — including
+ * comms/agentbbs-notification-channel.ts, which reuses this same
+ * dependency-free leaf rather than importing agentdb-adapter.ts and risking
+ * the two-way import cycle documented above — gets the same guard.
+ *
+ * Keys/node-ids across this codebase are built by string-concatenating
+ * caller-supplied ids into `:`-delimited templates, and AgentDB recall does
+ * exact-string matching on the result. An id containing a template's own
+ * delimiter (":goal:", ":issue:", ":comms-room", "entity:issue:", etc.) can
+ * make two semantically different id tuples serialize to the identical
+ * key/node-id string, letting a crafted id collide with — and overwrite or
+ * be confused with — a different entity's record or graph node
+ * (13ac549 closed the first instance of this repo-wide; reintroduced once
+ * in agentbbs-notification-channel.ts's registerCompanyCommsRoom, found by
+ * an independent test and closed again here — see that file's call site).
+ * assertValid* in schema/validation.ts blocks unsafe ids on entity write
+ * paths that go through it; this guard covers every id-only function that
+ * builds a key/node-id directly (recall, causal-edge, graph-neighbor
+ * lookups, comms-room registration) without going through an assertValid*
+ * call first.
+ */
+export const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,256}$/;
+
+export function assertSafeId(value: string, label: string): void {
+  if (!SAFE_ID_PATTERN.test(value)) {
+    throw new AgentDbBridgeError(`Refusing to build an AgentDB key/node-id from unsafe ${label} '${value}'`);
+  }
+}
+
 export interface AgentDbAdapterConfig {
   /** Base URL of a `ruflo mcp start -t http` server. Defaults to RUCLIP_AGENTDB_BRIDGE_URL or http://localhost:3000. */
   baseUrl?: string;

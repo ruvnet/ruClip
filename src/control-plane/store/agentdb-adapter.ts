@@ -79,7 +79,7 @@ import {
   acceptClaimHandoff,
   ClaimAuthorizationError,
 } from '../authorization/claims-authorization.js';
-import { AgentDbBridgeError, callTool, type AgentDbAdapterConfig } from './bridge-client.js';
+import { AgentDbBridgeError, callTool, assertSafeId, type AgentDbAdapterConfig } from './bridge-client.js';
 
 // Re-exported so every existing `from '../store/agentdb-adapter.js'` import
 // of these three names keeps working unchanged — see bridge-client.ts's
@@ -102,26 +102,9 @@ export class ApprovalGateViolationError extends AgentDbBridgeError {
 }
 
 // --- Keying (DOMAIN-MODEL.md §2.2) ---------------------------------------
-
-/**
- * Keys/node-ids below are built by string-concatenating caller-supplied ids
- * into `:`-delimited templates, and recallByKey does exact-string matching
- * on the result. An id containing a template's own delimiter (":goal:",
- * ":issue:", "entity:issue:", etc.) can make two semantically different id
- * tuples serialize to the identical key/node-id string, letting a crafted id
- * collide with — and overwrite or be confused with — a different entity's
- * record or graph node. assertValid* in schema/validation.ts blocks unsafe
- * ids on entity write paths; this guard covers the id-only functions below
- * (recall, causal-edge, graph-neighbor lookups) that never go through an
- * assertValid* call.
- */
-const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,256}$/;
-
-function assertSafeId(value: string, label: string): void {
-  if (!SAFE_ID_PATTERN.test(value)) {
-    throw new AgentDbBridgeError(`Refusing to build an AgentDB key/node-id from unsafe ${label} '${value}'`);
-  }
-}
+// assertSafeId now lives in bridge-client.ts (imported above) so every
+// module building an AgentDB key/node-id shares the same guard — see that
+// file's header comment for the collision class this closes.
 
 export function companyKey(companyId: string): string {
   assertSafeId(companyId, 'companyId');
@@ -757,6 +740,21 @@ function tierForHeartbeatStatus(status: HeartbeatStatus): MemoryTier {
  * system-initiated cadence upkeep, not an actor-requested lifecycle change,
  * so it is not one of the three operations §6 requires authorization for.
  *
+ * Security-hardening correction (security review round 4): the original
+ * version of this function made `actor` unconditionally optional, with
+ * nothing distinguishing a genesis create (one of the three operations §6
+ * requires authorization for) from fireHeartbeat's legitimate no-actor
+ * re-persist of an ALREADY-EXISTING schedule. A caller could create a
+ * brand-new schedule with no actor and no live claim check at all —
+ * confirmed exploitable by an independent test
+ * (tests/control-plane/heartbeats-authorization-gaps.test.ts). Fixed the
+ * same way the pre-de48670 Guard A create-path bug was: recall the
+ * currently-stored schedule first; a `null` result means this write is a
+ * genesis create, which now hard-requires `actor` (mirroring Guard A's
+ * `stored === null` create-path convention in persistIssue). fireHeartbeat
+ * never creates — it only ever re-persists a schedule it just recalled to
+ * fire — so this does not affect its no-actor bookkeeping writes.
+ *
  * Also recalls the target (Issue or Goal) and rejects a
  * `target.issueId`'s `goalId` mismatch against the real stored Issue,
  * mirroring how persistIssue already recalls state before writing (§1's
@@ -769,6 +767,14 @@ export async function persistHeartbeatSchedule(
   config?: AgentDbAdapterConfig,
 ): Promise<void> {
   assertValidHeartbeatSchedule(schedule);
+
+  const stored = await recallHeartbeatSchedule(schedule.companyId, schedule.target, schedule.id, config);
+  if (stored === null && !actor) {
+    throw new ApprovalGateViolationError(
+      `Creating HeartbeatSchedule '${schedule.id}' requires an acting OrgMember (HEARTBEATS-AND-COMMS.md §6) — ` +
+        `actor was not supplied`,
+    );
+  }
 
   let targetNodeId: string;
   if (schedule.target.kind === 'issue') {

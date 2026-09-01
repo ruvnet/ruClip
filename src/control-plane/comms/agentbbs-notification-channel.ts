@@ -9,7 +9,7 @@
  * degradation, unlike `claims_*`'s `success:false` failure convention —
  * `degraded` is the field to check here, not `success`).
  */
-import { callTool, type AgentDbAdapterConfig } from '../store/bridge-client.js';
+import { callTool, assertSafeId, type AgentDbAdapterConfig } from '../store/bridge-client.js';
 import type { NotificationChannel, NotificationEvent, NotificationKind } from '../schema/notification.js';
 
 /** federation_bbs_publish's real, closed msgType vocabulary — HEARTBEATS-AND-COMMS.md §5 table. */
@@ -65,6 +65,7 @@ export async function registerCompanyCommsRoom(
   companyId: string,
   config?: AgentDbAdapterConfig,
 ): Promise<{ roomId: string; degraded: boolean }> {
+  assertSafeId(companyId, 'companyId');
   const result = await callTool<FederationBbsRegisterResult>(
     'federation_bbs_register',
     { roomLabel: `#ruclip-${companyId}` },

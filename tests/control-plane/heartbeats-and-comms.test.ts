@@ -224,16 +224,30 @@ test('persistHeartbeatSchedule (goal target) does not call claims_list — a bar
 });
 
 test('persistHeartbeatSchedule without an actor (system-firing path) skips the claim check entirely', async () => {
+  // Represents fireHeartbeat's own re-persist of a schedule that ALREADY
+  // EXISTS (a genesis create with no actor is a different, rejected case —
+  // see the security-hardening create-path check in agentdb-adapter.ts and
+  // its coverage in heartbeats-authorization-gaps.test.ts), so the mock
+  // simulates that prior existence via the schedule's own heartbeat key.
   const issue = baseIssue();
+  const existingSchedule = baseSchedule();
+  const scheduleKey = heartbeatKey(existingSchedule.companyId, existingSchedule.target, existingSchedule.id);
   const { calls, config } = mockBridge({
-    'agentdb_hierarchical-recall': (args) =>
-      args.tier === 'working' && args.query === 'ruclip:company:co-1:goal:goal-1:issue:issue-1'
-        ? { results: [{ key: 'ruclip:company:co-1:goal:goal-1:issue:issue-1', value: JSON.stringify(issue) }] }
-        : { results: [] },
+    'agentdb_hierarchical-recall': (args) => {
+      if (args.tier === 'working' && args.query === 'ruclip:company:co-1:goal:goal-1:issue:issue-1') {
+        return { results: [{ key: 'ruclip:company:co-1:goal:goal-1:issue:issue-1', value: JSON.stringify(issue) }] };
+      }
+      if (args.tier === 'working' && args.query === scheduleKey) {
+        return { results: [{ key: scheduleKey, value: JSON.stringify(existingSchedule) }] };
+      }
+      return { results: [] };
+    },
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_causal-edge': () => ({ success: true }),
   });
-  await assert.doesNotReject(() => persistHeartbeatSchedule(baseSchedule(), undefined, undefined, config));
+  await assert.doesNotReject(() =>
+    persistHeartbeatSchedule(existingSchedule, undefined, existingSchedule.status, config),
+  );
   assert.ok(!calls.some((c) => c.toolName === 'claims_list'));
 });
 
@@ -357,18 +371,27 @@ test('setOperatingBudget calls memory_store with upsert:true against the ruclip-
 test('fireHeartbeat Gate 1 blocks and pauses when an issue-target heartbeat would push spend over the hard-stop cap', async () => {
   const company = baseCompany({ budget: { total: 1000, spent: 800, currency: 'USD', period: '2026-09', hardStopThreshold: 0.9 } });
   const issue = baseIssue({ budgetImpact: 200 }); // 800 + 200 = 1000 > 1000*0.9 = 900
+  const schedule = baseSchedule();
+  const scheduleKey = heartbeatKey(schedule.companyId, schedule.target, schedule.id);
   const { calls, config } = mockBridge({
     'agentdb_hierarchical-recall': (args) => {
       if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1') return { results: [{ key: args.query, value: JSON.stringify(company) }] };
       if (args.tier === 'working' && args.query === 'ruclip:company:co-1:goal:goal-1:issue:issue-1') {
         return { results: [{ key: args.query, value: JSON.stringify(issue) }] };
       }
+      // persistHeartbeatSchedule now recalls the schedule itself first
+      // (security hardening — see agentdb-adapter.ts's create-path check) —
+      // this is fireHeartbeat's legitimate no-actor re-persist of an
+      // ALREADY-EXISTING schedule, so the mock must simulate that it exists.
+      if (args.tier === 'working' && args.query === scheduleKey) {
+        return { results: [{ key: scheduleKey, value: JSON.stringify(schedule) }] };
+      }
       return { results: [] };
     },
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_causal-edge': () => ({ success: true }),
   });
-  const result = await fireHeartbeat(baseSchedule(), {}, config);
+  const result = await fireHeartbeat(schedule, {}, config);
   assert.equal(result.outcome, 'application_budget_blocked');
   assert.equal(result.schedule.status, 'paused');
   assert.equal(result.schedule.lastOutcome, 'application_budget_blocked');
@@ -397,11 +420,18 @@ test('fireHeartbeat Gate 1 for a goal-target heartbeat checks Goal.budgetAllocat
   const company = baseCompany();
   const goal = baseGoal({ budgetAllocation: null });
   const schedule = baseSchedule({ target: { kind: 'goal', goalId: 'goal-1' } });
+  const scheduleKey = heartbeatKey(schedule.companyId, schedule.target, schedule.id);
   const { config } = mockBridge({
     'agentdb_hierarchical-recall': (args) => {
       if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1') return { results: [{ key: args.query, value: JSON.stringify(company) }] };
       if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1:goal:goal-1') {
         return { results: [{ key: args.query, value: JSON.stringify(goal) }] };
+      }
+      // persistHeartbeatSchedule now recalls the schedule itself first
+      // (security hardening) — simulate it already existing, matching
+      // fireHeartbeat's legitimate no-actor re-persist.
+      if (args.tier === 'working' && args.query === scheduleKey) {
+        return { results: [{ key: scheduleKey, value: JSON.stringify(schedule) }] };
       }
       return { results: [] };
     },

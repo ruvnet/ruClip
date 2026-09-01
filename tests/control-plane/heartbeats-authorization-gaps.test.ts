@@ -16,32 +16,35 @@
  * slice adds, rather than re-testing what the coder's own suite already
  * covers well.
  *
- * FINDING 1 (test 1 below), most severe: `registerCompanyCommsRoom`
- * (comms/agentbbs-notification-channel.ts) builds its AgentDB key via raw
- * string interpolation — `ruclip:company:${companyId}:comms-room` — with NO
- * `assertSafeId`/`isSafeId` check on `companyId` at all. Every OTHER
- * key-builder in store/agentdb-adapter.ts (companyKey, orgMemberKey,
- * goalKey, issueKey, commentKey, approvalTransitionKey, heartbeatKey,
- * entityNodeId) calls `assertSafeId` specifically because of the id-collision
- * class of bug the security-hardening commit (13ac549, referenced in
- * validation.ts's SAFE_ID_PATTERN comment) closed repo-wide: an id
- * containing a template's own delimiter can make two different entities
- * serialize to the identical AgentDB key. This new file was written without
- * that same guard, reintroducing the exact vulnerability class that was
- * supposedly closed everywhere else. Concretely: `registerCompanyCommsRoom`
- * always writes its own key to the 'semantic' tier — the SAME tier
- * `persistOrgMember`/`orgMemberKey` use — and it is possible to craft a
- * `companyId` string such that `ruclip:company:${companyId}:comms-room`
- * exactly equals `orgMemberKey(realCompanyId, 'comms-room')`
+ * FINDING 1 (test 1 below), most severe, FIXED (security review round 4):
+ * `registerCompanyCommsRoom` (comms/agentbbs-notification-channel.ts) built
+ * its AgentDB key via raw string interpolation —
+ * `ruclip:company:${companyId}:comms-room` — with NO `assertSafeId`/
+ * `isSafeId` check on `companyId` at all. Every OTHER key-builder in
+ * store/agentdb-adapter.ts (companyKey, orgMemberKey, goalKey, issueKey,
+ * commentKey, approvalTransitionKey, heartbeatKey, entityNodeId) calls
+ * `assertSafeId` specifically because of the id-collision class of bug the
+ * security-hardening commit (13ac549, referenced in validation.ts's
+ * SAFE_ID_PATTERN comment) closed repo-wide: an id containing a template's
+ * own delimiter can make two different entities serialize to the identical
+ * AgentDB key. This new file was written without that same guard,
+ * reintroducing the exact vulnerability class that was supposedly closed
+ * everywhere else. Concretely: `registerCompanyCommsRoom` always writes its
+ * own key to the 'semantic' tier — the SAME tier `persistOrgMember`/
+ * `orgMemberKey` use — and it was possible to craft a `companyId` string
+ * such that `ruclip:company:${companyId}:comms-room` exactly equalled
+ * `orgMemberKey(realCompanyId, 'comms-room')`
  * (= `ruclip:company:${realCompanyId}:org-member:comms-room`), by passing
- * `companyId = '${realCompanyId}:org-member'`. Test 1 proves this is a real
- * collision, not just matching strings: it persists a genuine OrgMember with
- * id 'comms-room' in a real company, then calls registerCompanyCommsRoom
- * with the crafted companyId, and shows recallOrgMember now returns the
- * corrupted comms-room config blob in place of the OrgMember record.
+ * `companyId = '${realCompanyId}:org-member'`. Test 1 proved this was a real
+ * collision, not just matching strings. `assertSafeId`/`SAFE_ID_PATTERN` now
+ * live in store/bridge-client.ts (the dependency-free leaf both
+ * agentdb-adapter.ts and this comms file import from, avoiding the same
+ * two-way-import-cycle problem bridge-client.ts's own header documents), and
+ * `registerCompanyCommsRoom` calls `assertSafeId(companyId, 'companyId')`
+ * before building its key — test 1 now locks down the rejection.
  *
- * FINDING 2 (test 2 below), narrower: `persistHeartbeatSchedule`'s `actor`
- * parameter is optional with no way to distinguish a legitimate
+ * FINDING 2 (test 2 below), narrower, FIXED: `persistHeartbeatSchedule`'s
+ * `actor` parameter was optional with no way to distinguish a legitimate
  * system-bookkeeping write (fireHeartbeat's own re-persist after firing,
  * which correctly omits actor per the file's own comment) from a hostile
  * caller creating/pausing/resuming a schedule and simply omitting `actor` to
@@ -49,12 +52,13 @@
  * or resuming a HeartbeatSchedule requires the acting OrgMember to currently
  * hold a live claim"). Unlike persistIssue's Guard A (which uses
  * `stored === null` to know a call is a genesis create and therefore must
- * follow create-path rules), persistHeartbeatSchedule has no equivalent
- * signal — `previousStatus === undefined` would be the natural analogue but
- * nothing checks it. The coder's own suite documents the system-firing skip
- * as intentional (heartbeats-and-comms.test.ts:226) but doesn't test the
- * inverse: a caller impersonating a genesis create with no actor and no live
- * claim on the target issue at all. Test 2 proves that succeeds today.
+ * follow create-path rules), persistHeartbeatSchedule had no equivalent
+ * signal. Fixed the same way: persistHeartbeatSchedule now recalls the
+ * stored schedule first, and a `null` result (genesis create) hard-requires
+ * `actor` — fireHeartbeat never creates, only re-persists a schedule it just
+ * recalled to fire, so its no-actor bookkeeping writes are unaffected. Test
+ * 2 now locks down the rejection for a caller impersonating a genesis create
+ * with no actor and no live claim on the target issue at all.
  *
  * No live AgentDB/claims/agentbbs instance — mockBridge / a small stateful
  * mock, same as the rest of this suite.
@@ -67,6 +71,7 @@ import {
   recallOrgMember,
   orgMemberKey,
   persistHeartbeatSchedule,
+  ApprovalGateViolationError,
 } from '../../src/control-plane/store/agentdb-adapter.js';
 import { registerCompanyCommsRoom } from '../../src/control-plane/comms/agentbbs-notification-channel.js';
 import type { OrgMember } from '../../src/control-plane/schema/org-member.js';
@@ -91,8 +96,8 @@ function baseOrgMember(overrides: Partial<OrgMember> = {}): OrgMember {
 // --- Finding 1: registerCompanyCommsRoom's unchecked companyId collides with a real OrgMember key ---
 
 test(
-  'registerCompanyCommsRoom with an unsanitized companyId collides with orgMemberKey(realCompanyId, "comms-room") ' +
-    'and overwrites a real, previously-persisted OrgMember record at the same AgentDB key/tier',
+  'registerCompanyCommsRoom rejects a companyId that would collide with orgMemberKey(realCompanyId, "comms-room") ' +
+    '— assertSafeId now runs before the key is ever built',
   async () => {
     const tiers: Record<string, Map<string, string>> = { working: new Map(), episodic: new Map(), semantic: new Map() };
     const { calls, config } = mockBridge({
@@ -119,29 +124,22 @@ test(
     const expectedKey = orgMemberKey('acme', 'comms-room');
     assert.equal(tiers.semantic!.get(expectedKey), JSON.stringify(realMember), 'sanity check: the real member is stored');
 
-    // The attack: register a comms room with a crafted companyId that makes
-    // the comms-room key template collide with that exact OrgMember key.
+    // The attack: register a comms room with a crafted companyId that would
+    // make the comms-room key template collide with that exact OrgMember
+    // key. assertSafeId now rejects it before any bridge call is made.
     const craftedCompanyId = 'acme:org-member';
-    const result = await registerCompanyCommsRoom(craftedCompanyId, config);
-    assert.equal(result.degraded, false);
-
-    const commsRoomStoreCall = calls.find(
-      (c) => c.toolName === 'agentdb_hierarchical-store' && (c.args.value as string).includes('roomId'),
-    );
+    const callsBeforeAttack = calls.length;
+    await assert.rejects(() => registerCompanyCommsRoom(craftedCompanyId, config), /unsafe companyId/);
     assert.equal(
-      commsRoomStoreCall?.args.key,
-      expectedKey,
-      'the comms-room write landed on the exact same key as the real OrgMember',
+      calls.length,
+      callsBeforeAttack,
+      'a rejected companyId must make no bridge calls at all (assertSafeId runs before federation_bbs_register)',
     );
 
-    // Observable corruption: recalling the OrgMember now returns the
-    // comms-room config blob instead, silently, with no error anywhere.
-    const corrupted = await recallOrgMember('acme', 'comms-room', config);
-    assert.notEqual((corrupted as unknown as { kind?: string })?.kind, 'human');
-    assert.ok(
-      (corrupted as unknown as { roomId?: string })?.roomId,
-      'the value now recalled through the OrgMember accessor is the comms-room record, not the OrgMember',
-    );
+    // The real OrgMember record must be untouched.
+    const stillReal = await recallOrgMember('acme', 'comms-room', config);
+    assert.equal(stillReal?.kind, 'human');
+    assert.equal(stillReal?.id, 'comms-room');
   },
 );
 
@@ -184,10 +182,9 @@ function baseSchedule(overrides: Partial<HeartbeatSchedule> = {}): HeartbeatSche
 }
 
 test(
-  'persistHeartbeatSchedule creates a brand-new schedule (previousStatus undefined, ' +
-    'i.e. not fireHeartbeat\'s own bookkeeping re-persist) with NO actor supplied and NO live claim ' +
-    'on the target issue anywhere — HEARTBEATS-AND-COMMS.md §6\'s "requires a live claim" invariant ' +
-    'is never checked, because nothing distinguishes this from the legitimate system-firing skip',
+  'persistHeartbeatSchedule rejects creating a brand-new schedule (recallHeartbeatSchedule returns null, ' +
+    'i.e. not fireHeartbeat\'s own bookkeeping re-persist of an existing one) with NO actor supplied — ' +
+    'HEARTBEATS-AND-COMMS.md §6\'s "requires a live claim" invariant now has a genesis-create gate to enforce it against',
   async () => {
     const issue = baseIssue();
     const { calls, config } = mockBridge({
@@ -199,15 +196,17 @@ test(
       'agentdb_causal-edge': () => ({ success: true }),
       // Deliberately NO 'claims_list' handler registered — if
       // verifyActorHoldsClaim were ever invoked, the mock would throw
-      // "No mock handler registered", proving definitively it never runs.
+      // "No mock handler registered". It never gets that far now: the
+      // create-path actor requirement rejects first.
     });
 
-    await assert.doesNotReject(() =>
-      persistHeartbeatSchedule(baseSchedule(), undefined, undefined, config),
+    await assert.rejects(
+      () => persistHeartbeatSchedule(baseSchedule(), undefined, undefined, config),
+      ApprovalGateViolationError,
     );
     assert.ok(
-      !calls.some((c) => c.toolName === 'claims_list'),
-      'no authorization check of any kind ran for this genesis create',
+      !calls.some((c) => c.toolName === 'agentdb_hierarchical-store' || c.toolName === 'claims_list'),
+      'a rejected genesis create must make no writes and no authorization calls',
     );
   },
 );
