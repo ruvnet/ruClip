@@ -487,14 +487,25 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
      `radio-moe@0.3.1` package (not a mock).
 3. **Phase 2 — Dashboard**: Claude Artifact-based company board (capabilities:
    live state, multi-viewer, saved documents). **Hard prerequisite added
-   2026-09-01** (`docs/design/ACTOR-IDENTITY-VERIFICATION.md`): real human
-   authentication/login must be solved as this phase's first concern, not
-   designed later. `ActorCredential` verification (the cross-cutting fix
-   for the actor-forgery gap security found — closes it for agent
-   `OrgMember`s via a fresh, per-call, cryptographically-signed credential)
-   has no working issuance path for `kind: 'human'` actors — no
-   dashboard/login flow exists anywhere in ruClip yet to issue one through.
-   Phase 2's own design doc must solve human credential issuance first.
+   2026-09-01, narrowed 2026-09-01** (`docs/design/ACTOR-IDENTITY-VERIFICATION.md`
+   §4): real human authentication/login must be solved as this phase's
+   first concern, not designed later. `ActorCredential` verification (the
+   cross-cutting fix for the actor-forgery gap security found — closes it
+   for agent `OrgMember`s via a fresh, per-call, cryptographically-signed
+   credential) has no working issuance path for `kind: 'human'` actors —
+   no dashboard/login flow exists anywhere in ruClip yet to issue one
+   through. **Narrowed scope, not all human-reachable functions**: this
+   blocks only the three sites that exercise authority on behalf of the
+   company or grant access/effect visible to another party (approval
+   decisions, comms-room registration, heartbeat creation) — a strictly
+   self-referential action with no other party affected
+   (`setInteractionProfileConsent`, where actor and subject must already
+   be identical) is explicitly exempt and keeps working on its
+   pre-existing self-check, with the residual forgery risk there tracked
+   as an accepted, pre-existing gap rather than newly blocked or silently
+   ignored. Phase 2's own design doc must solve human credential issuance
+   first, closing that residual gap as part of the same work, not as a
+   separate follow-up.
    - **Delivered this iteration** (`ACTOR-IDENTITY-VERIFICATION.md`,
      `src/control-plane/authorization/{actor-credential,credential-issuer}.ts`):
      `ActorCredential` (signed via `radio-moe`'s real `AgentFrame`
