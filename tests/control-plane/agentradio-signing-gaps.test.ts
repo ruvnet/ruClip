@@ -13,22 +13,23 @@
  * covered, or the tamper-evidence claim is partial in a way nobody has
  * tested yet.
  *
- * FINDING (test 1 below): `notificationFrame()` in
- * comms/agentbbs-notification-channel.ts builds the signed payload from
- * `requestId: event.subjectRef`, `value: {kind, companyId, payload}` — it
- * does NOT include `event.occurredAt` anywhere. That means
- * `verifySignedNotification` returns `true` for an event whose `occurredAt`
- * has been changed after signing, as long as `subjectRef`/`kind`/
- * `companyId`/`payload` are unchanged. Since `occurredAt` is part of what
+ * FINDING (test 1 below), FIXED (security review round 5): `notificationFrame()`
+ * in comms/agentbbs-notification-channel.ts built the signed payload from
+ * `requestId: event.subjectRef`, `value: {kind, companyId, payload}` —
+ * it did NOT include `event.occurredAt` anywhere. That meant
+ * `verifySignedNotification` returned `true` for an event whose `occurredAt`
+ * had been changed after signing, as long as `subjectRef`/`kind`/
+ * `companyId`/`payload` were unchanged. Since `occurredAt` is part of what
  * gets published (`publish()` includes it in the outbound payload
  * alongside the signature) and is a semantically meaningful audit-trail
  * field (per HEARTBEATS-AND-COMMS.md's own framing — this signing layer
  * exists specifically for "tamper-evidence/provenance"), a receiver calling
  * `verifySignedNotification(event, signature) === true` would reasonably
- * assume the ENTIRE event they were handed — including when it claims to
- * have happened — is verified. It isn't: `occurredAt` can be altered
- * without invalidating the signature. Test 1 proves this concretely against
- * the real, installed radio-moe package (not a mock of it).
+ * have assumed the ENTIRE event they were handed — including when it claims
+ * to have happened — was verified. It wasn't: `occurredAt` could be altered
+ * without invalidating the signature. `occurredAt` is now folded into the
+ * signed `value`, so test 1 below now locks down the rejection (proved
+ * concretely against the real, installed radio-moe package, not a mock).
  *
  * Tests 2-4 are coverage the coder's own single tamper-evidence test
  * (payload-only) doesn't reach: cross-company replay, subjectRef tampering,
@@ -78,8 +79,8 @@ async function publishAndCapture(event: NotificationEvent): Promise<RadioMoeSign
 // --- Finding: occurredAt is not covered by the signature ---
 
 test(
-  'FINDING: verifySignedNotification still returns true when occurredAt is changed after signing — ' +
-    'the signed frame never includes event.occurredAt, so the "tamper-evidence" claim does not extend to it',
+  'FIXED: verifySignedNotification rejects when occurredAt is changed after signing — ' +
+    'occurredAt is now part of the signed frame, so the "tamper-evidence" claim extends to it',
   async () => {
     const original = baseEvent({ occurredAt: now });
     const signature = await publishAndCapture(original);
@@ -92,9 +93,8 @@ test(
     const verified = await verifySignedNotification(timestampTampered, signature);
     assert.equal(
       verified,
-      true,
-      'occurredAt is NOT part of the signed frame — this assertion documents the current (gap) behavior; ' +
-        'if this ever starts failing, the gap has been fixed and this test should be inverted',
+      false,
+      'occurredAt is now part of the signed frame — altering it must invalidate the signature',
     );
   },
 );

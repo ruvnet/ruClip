@@ -107,14 +107,30 @@ function getSigningIdentity(radioMoe: RadioMoeModule): { peerId: string; publicK
   return _signingIdentity;
 }
 
-/** The exact frame shape signed/verified — kept in one place so signing and verification never drift apart. */
+/**
+ * The exact frame shape signed/verified — kept in one place so signing and
+ * verification never drift apart.
+ *
+ * Security-hardening correction (security review round 5): the original
+ * version of this frame omitted `event.occurredAt` entirely, even though
+ * `publish()` ships it in the outbound payload alongside the signature.
+ * That meant `verifySignedNotification` returned `true` for an event whose
+ * `occurredAt` had been altered after signing, as long as
+ * subjectRef/kind/companyId/payload were unchanged — a receiver reasonably
+ * trusting "verified === true" would be wrong about *when* the event
+ * happened, which is exactly the kind of fact an audit-trail signature must
+ * cover (confirmed exploitable by an independent test,
+ * tests/control-plane/agentradio-signing-gaps.test.ts). `occurredAt` is now
+ * part of the signed `value`, so tampering with it invalidates the
+ * signature like every other field this frame covers.
+ */
 function notificationFrame(event: NotificationEvent): Record<string, unknown> {
   return {
     requestId: event.subjectRef,
     agentId: 'ruclip',
     step: 0,
     kind: 'evidence',
-    value: { kind: event.kind, companyId: event.companyId, payload: event.payload },
+    value: { kind: event.kind, companyId: event.companyId, payload: event.payload, occurredAt: event.occurredAt },
     confidence: 1,
     uncertainty: 0,
     dependencies: [],
