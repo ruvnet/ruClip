@@ -58,6 +58,8 @@ import type { OrgMember } from '../schema/org-member.js';
 import type { Goal } from '../schema/goal.js';
 import type { Issue } from '../schema/issue.js';
 import type { Comment } from '../schema/comment.js';
+import type { ApprovalAction, ApprovalTransition } from '../schema/approval-transition.js';
+import type { WitnessHook } from '../schema/witness.js';
 import type { CausalRelation, MemoryTier } from '../schema/enums.js';
 import {
   assertValidCompany,
@@ -65,12 +67,27 @@ import {
   assertValidGoal,
   assertValidIssue,
   assertValidComment,
+  assertValidApprovalTransition,
 } from '../schema/validation.js';
+import { transitionApprovalState, isLegalApprovalTransition } from '../approval/transition-approval-state.js';
 
 export class AgentDbBridgeError extends Error {
   constructor(message: string, public readonly cause?: unknown) {
     super(message);
     this.name = 'AgentDbBridgeError';
+  }
+}
+
+/**
+ * Raised by persistIssue's Guard A/B (APPROVAL-GATE.md §3) when a write
+ * would change approvalState without a matching, legal ApprovalTransition,
+ * or would change budgetImpact after the issue has left 'draft'. Subclasses
+ * AgentDbBridgeError so callers that already catch that still see it.
+ */
+export class ApprovalGateViolationError extends AgentDbBridgeError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ApprovalGateViolationError';
   }
 }
 
@@ -177,6 +194,15 @@ export function issueKey(companyId: string, goalId: string, issueId: string): st
 export function commentKey(companyId: string, goalId: string, issueId: string, commentId: string): string {
   assertSafeId(commentId, 'commentId');
   return `${issueKey(companyId, goalId, issueId)}:comment:${commentId}`;
+}
+export function approvalTransitionKey(
+  companyId: string,
+  goalId: string,
+  issueId: string,
+  transitionId: string,
+): string {
+  assertSafeId(transitionId, 'transitionId');
+  return `${issueKey(companyId, goalId, issueId)}:approval-transition:${transitionId}`;
 }
 
 /** ADR-130 domain-prefixed node id for causal-edge / graph-query calls. */
@@ -344,18 +370,119 @@ export async function recallGoal(
 // --- Issue ---------------------------------------------------------------
 
 /**
+ * Guard A (APPROVAL-GATE.md §3): approvalState may not change without a
+ * matching, re-validated ApprovalTransition. Throws ApprovalGateViolationError
+ * on any mismatch; makes no writes (called before persistIssue's first write).
+ */
+function checkApprovalStateGuard(
+  issue: Issue,
+  stored: Issue | null,
+  approvalTransition: ApprovalTransition | undefined,
+): void {
+  if (stored === null) {
+    if (issue.approvalTransitionRef !== null) {
+      throw new ApprovalGateViolationError(
+        `New issue '${issue.id}' must not carry an approvalTransitionRef (got '${issue.approvalTransitionRef}')`,
+      );
+    }
+    const isDraftDefault = issue.approvalState === 'draft';
+    const isZeroBudgetFastPath = issue.approvalState === 'approved' && issue.budgetImpact === 0;
+    if (!isDraftDefault && !isZeroBudgetFastPath) {
+      throw new ApprovalGateViolationError(
+        `New issue '${issue.id}' must start with approvalState 'draft', or 'approved' with budgetImpact === 0 ` +
+          `(got approvalState '${issue.approvalState}' with budgetImpact ${issue.budgetImpact})`,
+      );
+    }
+    return;
+  }
+
+  if (issue.approvalState === stored.approvalState) {
+    if (approvalTransition !== undefined) {
+      throw new ApprovalGateViolationError(
+        `Issue '${issue.id}' approvalState is unchanged ('${issue.approvalState}') but an approvalTransition was supplied`,
+      );
+    }
+    if (issue.approvalTransitionRef !== stored.approvalTransitionRef) {
+      throw new ApprovalGateViolationError(
+        `Issue '${issue.id}' approvalState is unchanged but approvalTransitionRef changed from ` +
+          `'${stored.approvalTransitionRef}' to '${issue.approvalTransitionRef}'`,
+      );
+    }
+    return;
+  }
+
+  if (!approvalTransition) {
+    throw new ApprovalGateViolationError(
+      `Issue '${issue.id}' approvalState changed from '${stored.approvalState}' to '${issue.approvalState}' ` +
+        `but no approvalTransition was supplied`,
+    );
+  }
+  if (approvalTransition.issueId !== issue.id) {
+    throw new ApprovalGateViolationError(
+      `approvalTransition.issueId '${approvalTransition.issueId}' does not match issue '${issue.id}'`,
+    );
+  }
+  if (approvalTransition.fromState !== stored.approvalState) {
+    throw new ApprovalGateViolationError(
+      `approvalTransition.fromState '${approvalTransition.fromState}' does not match stored approvalState '${stored.approvalState}'`,
+    );
+  }
+  if (approvalTransition.toState !== issue.approvalState) {
+    throw new ApprovalGateViolationError(
+      `approvalTransition.toState '${approvalTransition.toState}' does not match issue.approvalState '${issue.approvalState}'`,
+    );
+  }
+  if (approvalTransition.id !== issue.approvalTransitionRef) {
+    throw new ApprovalGateViolationError(
+      `Issue '${issue.id}' approvalTransitionRef '${issue.approvalTransitionRef}' does not point at the supplied ` +
+        `approvalTransition '${approvalTransition.id}'`,
+    );
+  }
+  if (!isLegalApprovalTransition(approvalTransition.action, approvalTransition.fromState, approvalTransition.toState)) {
+    throw new ApprovalGateViolationError(
+      `approvalTransition (${approvalTransition.action}: ${approvalTransition.fromState} -> ${approvalTransition.toState}) ` +
+        `is not a legal transition — forged or corrupted ApprovalTransition object`,
+    );
+  }
+}
+
+/**
+ * Guard B (APPROVAL-GATE.md §3): budgetImpact is frozen once the stored
+ * issue's approvalState has left 'draft'.
+ */
+function checkBudgetImpactFrozenGuard(issue: Issue, stored: Issue | null): void {
+  if (stored !== null && stored.approvalState !== 'draft' && issue.budgetImpact !== stored.budgetImpact) {
+    throw new ApprovalGateViolationError(
+      `Issue '${issue.id}' budgetImpact is frozen once approvalState leaves 'draft' — stored approvalState is ` +
+        `'${stored.approvalState}' with budgetImpact ${stored.budgetImpact}, write attempted ${issue.budgetImpact}`,
+    );
+  }
+}
+
+/**
  * Persist an issue at the tier its status implies. When `previousStatus` is
  * given and its tier differs from the new status's tier, the stale copy is
  * removed from the old tier in the same call — DOMAIN-MODEL.md §2.1's "an
  * issue's tier changes exactly once, in the write that closes it."
+ *
+ * Before any write, recalls the currently-stored issue and runs Guard A
+ * (approvalState may not change without a matching, re-validated
+ * ApprovalTransition) and Guard B (budgetImpact is frozen once the issue
+ * leaves 'draft') — APPROVAL-GATE.md §3. Both guards throw
+ * ApprovalGateViolationError and make no writes on failure.
  */
 export async function persistIssue(
   companyId: string,
   issue: Issue,
   previousStatus?: Issue['status'],
+  approvalTransition?: ApprovalTransition,
   config?: AgentDbAdapterConfig,
 ): Promise<void> {
   assertValidIssue(issue);
+  const stored = await recallIssue(companyId, issue.goalId, issue.id, config);
+  checkApprovalStateGuard(issue, stored, approvalTransition);
+  checkBudgetImpactFrozenGuard(issue, stored);
+
   const key = issueKey(companyId, issue.goalId, issue.id);
   const tier = tierForIssueStatus(issue.status);
   await storeAtTier(key, issue, tier, config);
@@ -395,6 +522,64 @@ export async function recallIssue(
   return (
     (await recallByKey<Issue>(key, 'working', config)) ?? (await recallByKey<Issue>(key, 'episodic', config))
   );
+}
+
+/**
+ * Orchestrates one approval-state-machine step end to end (APPROVAL-GATE.md
+ * §4): computes the transition (pure, throws before any I/O if illegal),
+ * optionally witnesses it, persists the ApprovalTransition record, records
+ * the approved_by/rejected_by causal edge, then persists the updated Issue
+ * through the hardened persistIssue (which re-validates the transition via
+ * Guard A). `deps.witness` is optional — when omitted, `transition.witnessRef`
+ * stays null (a tracked gap, see schema/witness.ts and APPROVAL-GATE.md §5).
+ */
+export async function applyApprovalTransition(
+  companyId: string,
+  issue: Issue,
+  action: ApprovalAction,
+  actor: OrgMember,
+  previousTransition: ApprovalTransition | null,
+  deps: { witness?: WitnessHook; reason?: string },
+  config?: AgentDbAdapterConfig,
+): Promise<{ issue: Issue; transition: ApprovalTransition }> {
+  const { nextIssue, transition } = transitionApprovalState(issue, action, actor, previousTransition, {
+    reason: deps.reason,
+  });
+
+  if (deps.witness) {
+    const ref = await deps.witness.record({
+      subject: `issue:${issue.id}:approval-transition:${transition.id}`,
+      eventType: 'ruclip.issue.approval_transition',
+      payload: {
+        issueId: transition.issueId,
+        action: transition.action,
+        fromState: transition.fromState,
+        toState: transition.toState,
+        actorId: transition.actorId,
+        reason: transition.reason,
+        createdAt: transition.createdAt,
+      },
+      occurredAt: transition.createdAt,
+    });
+    transition.witnessRef = ref.id;
+  }
+
+  assertValidApprovalTransition(transition);
+  await storeAtTier(
+    approvalTransitionKey(companyId, issue.goalId, issue.id, transition.id),
+    transition,
+    tierForIssueStatus(nextIssue.status),
+    config,
+  );
+
+  if (action === 'approve' || action === 'reject') {
+    const relation: CausalRelation = action === 'approve' ? 'approved_by' : 'rejected_by';
+    await recordCausalEdge(entityNodeId('issue', issue.id), entityNodeId('org-member', actor.id), relation, config);
+  }
+
+  await persistIssue(companyId, nextIssue, issue.status, transition, config);
+
+  return { issue: nextIssue, transition };
 }
 
 /** DOMAIN-MODEL.md §1.4 `blocks` edge — no cycle check (blocking isn't a tree relation). */

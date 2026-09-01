@@ -70,6 +70,7 @@ function baseIssue(): Issue {
     status: 'open',
     approvalState: 'draft',
     budgetImpact: 0,
+    approvalTransitionRef: null,
     createdAt: now,
     updatedAt: now,
     closedAt: null,

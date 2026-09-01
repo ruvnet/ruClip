@@ -14,6 +14,7 @@ import type { OrgMember } from './org-member.js';
 import type { Goal } from './goal.js';
 import type { Issue } from './issue.js';
 import type { Comment } from './comment.js';
+import type { ApprovalAction, ApprovalTransition } from './approval-transition.js';
 import type {
   CompanyStatus,
   OrgMemberKind,
@@ -36,6 +37,7 @@ const ORG_MEMBER_STATUSES: readonly OrgMemberStatus[] = ['active', 'inactive'];
 const GOAL_STATUSES: readonly GoalStatus[] = ['proposed', 'active', 'achieved', 'abandoned'];
 const ISSUE_STATUSES: readonly IssueStatus[] = ['open', 'in_progress', 'blocked', 'done', 'cancelled'];
 const APPROVAL_STATES: readonly ApprovalState[] = ['draft', 'pending', 'approved', 'rejected'];
+const APPROVAL_ACTIONS: readonly ApprovalAction[] = ['submit', 'approve', 'reject', 'revise'];
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
@@ -186,6 +188,9 @@ export function assertValidIssue(issue: Issue): void {
   if (typeof issue.budgetImpact !== 'number' || issue.budgetImpact < 0) {
     throw new SchemaValidationError(entity, 'budgetImpact must be a non-negative number');
   }
+  if (issue.approvalTransitionRef !== null && !isSafeId(issue.approvalTransitionRef)) {
+    throw new SchemaValidationError(entity, 'approvalTransitionRef must be a safe non-empty id string or null');
+  }
   if (
     (issue.status === 'done' || issue.status === 'cancelled') &&
     issue.budgetImpact > 0 &&
@@ -218,4 +223,43 @@ export function assertValidComment(comment: Comment): void {
   }
   if (!isNonEmptyString(comment.body)) throw new SchemaValidationError(entity, 'body is required');
   if (!isIsoDate(comment.createdAt)) throw new SchemaValidationError(entity, 'createdAt must be ISO 8601');
+}
+
+/**
+ * Structural checks only (safe-id fields, enum membership, reason
+ * required-when-reject) — no access to prior state. Whether (action,
+ * fromState) is a legal move, whether the actor is active, and the
+ * self-approval invariant all need the issue/actor/previousTransition
+ * context this function doesn't have; those live in
+ * transitionApprovalState (src/control-plane/approval/transition-approval-state.ts)
+ * per APPROVAL-GATE.md §2.
+ */
+export function assertValidApprovalTransition(transition: ApprovalTransition): void {
+  const entity = 'ApprovalTransition';
+  if (!isSafeId(transition.id)) throw new SchemaValidationError(entity, 'id must be a safe non-empty id string');
+  if (!isSafeId(transition.issueId)) {
+    throw new SchemaValidationError(entity, 'issueId must be a safe non-empty id string');
+  }
+  if (!APPROVAL_ACTIONS.includes(transition.action)) {
+    throw new SchemaValidationError(entity, `action must be one of ${APPROVAL_ACTIONS.join(', ')}`);
+  }
+  if (!APPROVAL_STATES.includes(transition.fromState)) {
+    throw new SchemaValidationError(entity, `fromState must be one of ${APPROVAL_STATES.join(', ')}`);
+  }
+  if (!APPROVAL_STATES.includes(transition.toState)) {
+    throw new SchemaValidationError(entity, `toState must be one of ${APPROVAL_STATES.join(', ')}`);
+  }
+  if (!isSafeId(transition.actorId)) {
+    throw new SchemaValidationError(entity, 'actorId must be a safe non-empty id string');
+  }
+  if (transition.reason !== null && typeof transition.reason !== 'string') {
+    throw new SchemaValidationError(entity, 'reason must be a string or null');
+  }
+  if (transition.action === 'reject' && !isNonEmptyString(transition.reason)) {
+    throw new SchemaValidationError(entity, 'reason is required (non-empty) when action is reject');
+  }
+  if (!isIsoDate(transition.createdAt)) throw new SchemaValidationError(entity, 'createdAt must be ISO 8601');
+  if (transition.witnessRef !== null && !isNonEmptyString(transition.witnessRef)) {
+    throw new SchemaValidationError(entity, 'witnessRef must be a non-empty string or null');
+  }
 }

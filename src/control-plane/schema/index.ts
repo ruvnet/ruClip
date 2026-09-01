@@ -4,4 +4,6 @@ export * from './org-member.js';
 export * from './goal.js';
 export * from './issue.js';
 export * from './comment.js';
+export * from './approval-transition.js';
+export * from './witness.js';
 export * from './validation.js';

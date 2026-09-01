@@ -160,20 +160,49 @@ nightly scheduler, no new GCP cron — reuse verbatim.
      security pass that closed a key-collision/entity-confusion vuln (id
      charset restricted to `[A-Za-z0-9_-]{1,256}` in both the schema
      validators and the adapter's key builders — see commit `13ac549`).
-   - **Still remaining for Phase 1**: budget-gated heartbeats,
-     approval-gate *enforcement* (schema has `approvalState`/`budgetImpact`
-     fields, but no `transitionApprovalState`-equivalent function exists
-     anywhere in `src/control-plane` — a raw write can currently set
-     `approvalState: 'approved'` directly, with no tamper-evidence such as
-     approver id/timestamp/signature, and no enforcement of the
-     draft→pending→approved/rejected state machine per
-     `docs/design/DOMAIN-MODEL.md` §3), signed audit-trail wiring (no
-     witness/ADR-103 hook point yet on Issue state transitions — recommend
-     the eventual gate-enforcement layer write a witness entry in the same
-     transaction as any `approvalState` transition, and have
-     `assertValidIssue`/`persistIssue` reject a `done`-with-positive-
-     `budgetImpact` write that doesn't cite one), and agentbbs wiring (not
-     started).
+   - **Still remaining for Phase 1**: budget-gated heartbeats and agentbbs
+     wiring (not started).
+   - **Delivered this iteration** (Phase 1c, commits `2952348`..HEAD —
+     closes the approval-gate-enforcement gap the previous iteration
+     recorded): `ApprovalTransition` (`schema/approval-transition.ts`) and
+     the `WitnessHook`/`WitnessEntryInput`/`WitnessEntryRef` seam
+     (`schema/witness.ts`, interfaces only — no witness client yet, see
+     below), plus the pure `transitionApprovalState` state machine
+     (`src/control-plane/approval/transition-approval-state.ts`) enforcing
+     the draft→pending→approved/rejected→draft diagram from
+     `docs/design/DOMAIN-MODEL.md` §3 / `docs/design/APPROVAL-GATE.md` §1-2,
+     including reject-requires-reason, inactive-actor rejection, and the
+     self-approval (segregation-of-duties) invariant. `Issue` gained
+     `approvalTransitionRef` (`schema/issue.ts`), and
+     `store/agentdb-adapter.ts`'s `persistIssue` is now hardened with two
+     guards that make it the actual enforcement chokepoint (one extra
+     `recallIssue` read before any write, per `APPROVAL-GATE.md` §3):
+     **Guard A** rejects any write that changes `approvalState` without a
+     supplied `ApprovalTransition` whose `issueId`/`fromState`/`toState`/`id`
+     cross-reference the stored issue exactly *and* whose
+     `(action, fromState) -> toState` is independently re-verified as legal
+     (defense in depth against a forged `ApprovalTransition` object that
+     never went through `transitionApprovalState`); **Guard B** freezes
+     `budgetImpact` once the stored issue's `approvalState` leaves `'draft'`.
+     Both throw a new `ApprovalGateViolationError`. A new
+     `applyApprovalTransition` orchestrates the whole step (compute
+     transition → optional witness call → persist the immutable
+     `ApprovalTransition` record → record the `approved_by`/`rejected_by`
+     causal edge → hardened `persistIssue`), wiring the optional
+     `WitnessHook` dependency the same way `AgentDbAdapterConfig.fetchImpl`
+     is already injected. 106 tests total (up from 70), `tsc --strict`
+     clean.
+   - **Still a tracked, non-silent gap**: no real `WitnessHook`
+     implementation exists yet (ADR-103's actual signed manifest) —
+     `applyApprovalTransition` runs correctly with `deps.witness` omitted,
+     `ApprovalTransition.witnessRef` just stays `null`. The eventual
+     build-time genome's "audit-trail completeness" check (§5) should assert
+     `witnessRef !== null` on every `ApprovalTransition` once a real
+     `WitnessHook` lands. Also still open: wiring the actual
+     `claims_handoff`/`claims_accept-handoff` *authorization* check in front
+     of `applyApprovalTransition` — it currently trusts that the caller has
+     already established the actor is allowed to decide on an issue of this
+     `budgetImpact` bracket; enforcing that is a follow-on slice.
 3. **Phase 2 — Dashboard**: Claude Artifact-based company board (capabilities:
    live state, multi-viewer, saved documents).
 4. **Phase 3 — ruclip-metaharness**: build-time + runtime bench suites,

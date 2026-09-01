@@ -67,6 +67,7 @@ function baseIssue(overrides: Partial<Issue> = {}): Issue {
     status: 'open',
     approvalState: 'draft',
     budgetImpact: 0,
+    approvalTransitionRef: null,
     createdAt: now,
     updatedAt: now,
     closedAt: null,
@@ -142,24 +143,26 @@ test('recallOrgMember returns the member on an exact-key hit', async () => {
 
 test('persistIssue on first creation (no previousStatus) does not touch hierarchical-delete', async () => {
   const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': () => ({ results: [] }),
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_causal-edge': () => ({ success: true }),
   });
-  await persistIssue('co-1', baseIssue({ status: 'open' }), undefined, config);
+  await persistIssue('co-1', baseIssue({ status: 'open' }), undefined, undefined, config);
   const toolNames = calls.map((c) => c.toolName);
   assert.ok(!toolNames.includes('agentdb_hierarchical-delete'));
-  assert.equal(calls[0]?.toolName, 'agentdb_hierarchical-store');
-  assert.equal(calls[0]?.args.tier, 'working');
+  const storeCall = calls.find((c) => c.toolName === 'agentdb_hierarchical-store');
+  assert.equal(storeCall?.args.tier, 'working');
 });
 
 test('persistIssue closing an issue (open -> done) re-stores to episodic and deletes the stale working copy', async () => {
   const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': () => ({ results: [] }),
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_hierarchical-delete': () => ({ success: true }),
     'agentdb_causal-edge': () => ({ success: true }),
   });
   const closedIssue = baseIssue({ status: 'done', closedAt: now, budgetImpact: 0 });
-  await persistIssue('co-1', closedIssue, 'open', config);
+  await persistIssue('co-1', closedIssue, 'open', undefined, config);
 
   const storeCall = calls.find((c) => c.toolName === 'agentdb_hierarchical-store');
   const deleteCall = calls.find((c) => c.toolName === 'agentdb_hierarchical-delete');
@@ -171,24 +174,29 @@ test('persistIssue closing an issue (open -> done) re-stores to episodic and del
 
 test('persistIssue does not call hierarchical-delete when previousStatus maps to the same tier as the new status', async () => {
   const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': () => ({ results: [] }),
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_causal-edge': () => ({ success: true }),
   });
   // open -> in_progress: both 'working' tier.
-  await persistIssue('co-1', baseIssue({ status: 'in_progress' }), 'open', config);
+  await persistIssue('co-1', baseIssue({ status: 'in_progress' }), 'open', undefined, config);
   assert.ok(!calls.some((c) => c.toolName === 'agentdb_hierarchical-delete'));
 });
 
 test('persistIssue with a parentId checks for a parent_of cycle before writing the edge', async () => {
   const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': () => ({ results: [] }),
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_graph-query': () => ({ nodes: [] }),
     'agentdb_causal-edge': () => ({ success: true }),
   });
-  await persistIssue('co-1', baseIssue({ parentId: 'issue-parent' }), undefined, config);
+  await persistIssue('co-1', baseIssue({ parentId: 'issue-parent' }), undefined, undefined, config);
   const toolNames = calls.map((c) => c.toolName);
-  // belongs_to (goal) needs no cycle check; parent_of does.
+  // Guard A/B's recallIssue read (working tier, then episodic fallback) runs
+  // first; belongs_to (goal) needs no cycle check, parent_of does.
   assert.deepEqual(toolNames, [
+    'agentdb_hierarchical-recall', // Guard A/B read: working tier
+    'agentdb_hierarchical-recall', // Guard A/B read: episodic fallback
     'agentdb_hierarchical-store',
     'agentdb_causal-edge', // belongs_to -> goal
     'agentdb_graph-query', // cycle check for parent_of
@@ -202,6 +210,7 @@ test('persistIssue with a parentId checks for a parent_of cycle before writing t
 
 test('persistIssue refuses a parent_of edge that would close a genuine (non-self) cycle, and never writes the assigned_to edge that would have followed', async () => {
   const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': () => ({ results: [] }),
     'agentdb_hierarchical-store': () => ({ success: true }),
     // The proposed parent ("issue-parent") is reachable from the issue being
     // persisted ("issue-1") — i.e. issue-parent is already a descendant of
@@ -210,11 +219,18 @@ test('persistIssue refuses a parent_of edge that would close a genuine (non-self
     'agentdb_causal-edge': () => ({ success: true }),
   });
   const issue = baseIssue({ parentId: 'issue-parent', assigneeId: 'om-9' });
-  await assert.rejects(() => persistIssue('co-1', issue, undefined, config), AgentDbBridgeError);
+  await assert.rejects(() => persistIssue('co-1', issue, undefined, undefined, config), AgentDbBridgeError);
   const toolNames = calls.map((c) => c.toolName);
-  // belongs_to succeeded, then the cycle check ran and rejected before any
-  // parent_of/assigned_to edge write was attempted.
-  assert.deepEqual(toolNames, ['agentdb_hierarchical-store', 'agentdb_causal-edge', 'agentdb_graph-query']);
+  // Guard A/B read succeeded (stored=null), belongs_to succeeded, then the
+  // cycle check ran and rejected before any parent_of/assigned_to edge write
+  // was attempted.
+  assert.deepEqual(toolNames, [
+    'agentdb_hierarchical-recall',
+    'agentdb_hierarchical-recall',
+    'agentdb_hierarchical-store',
+    'agentdb_causal-edge',
+    'agentdb_graph-query',
+  ]);
 });
 
 test('recallIssue falls back to the episodic tier when the working tier has no match', async () => {
@@ -338,7 +354,24 @@ test(
   'persistIssue round-trips budgetImpact and approvalState verbatim into the hierarchical-store payload ' +
     '— fails if either field were silently dropped or renamed before serialization',
   async () => {
+    // Guard A/B need a stored issue whose approvalState/budgetImpact already
+    // match the write (unchanged), or the write would be rejected as an
+    // illegal direct-create of an 'approved' issue with budgetImpact > 0 —
+    // that rejection is exactly Guard A working as designed, not a bug, but
+    // it isn't what this canary is testing (whether the fields round-trip to
+    // the wire), so the mock represents "this issue already existed in this
+    // state" via the working-tier recall.
+    const storedIssue = baseIssue({
+      status: 'in_progress',
+      approvalState: 'approved',
+      budgetImpact: 4250,
+      approvalTransitionRef: null,
+    });
     const { calls, config } = mockBridge({
+      'agentdb_hierarchical-recall': (args) =>
+        args.tier === 'working'
+          ? { results: [{ key: 'ruclip:company:co-1:goal:goal-1:issue:issue-1', value: JSON.stringify(storedIssue) }] }
+          : { results: [] },
       'agentdb_hierarchical-store': () => ({ success: true }),
       'agentdb_hierarchical-delete': () => ({ success: true }),
       'agentdb_causal-edge': () => ({ success: true }),
@@ -347,9 +380,10 @@ test(
       status: 'done',
       approvalState: 'approved',
       budgetImpact: 4250,
+      approvalTransitionRef: null,
       closedAt: now,
     });
-    await persistIssue('co-1', issue, 'in_progress', config);
+    await persistIssue('co-1', issue, 'in_progress', undefined, config);
 
     const storeCall = calls.find((c) => c.toolName === 'agentdb_hierarchical-store');
     assert.ok(storeCall, 'expected a hierarchical-store call');
