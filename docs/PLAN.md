@@ -203,6 +203,25 @@ nightly scheduler, no new GCP cron — reuse verbatim.
      of `applyApprovalTransition` — it currently trusts that the caller has
      already established the actor is allowed to decide on an issue of this
      `budgetImpact` bracket; enforcing that is a follow-on slice.
+   - **Related, more specific open item flagged in security review**:
+     `checkApprovalStateGuard` ("Guard A" in
+     `store/agentdb-adapter.ts`/`APPROVAL-GATE.md` §3) only re-validates the
+     *shape* of a supplied `ApprovalTransition` — id/state cross-references
+     and `(action, fromState) -> toState` legality — because `persistIssue`
+     takes an `ApprovalTransition` object directly, not an `actor` +
+     `action` pair. The actor-validity checks (`actor.status === 'active'`,
+     the self-approval/segregation-of-duties invariant) live only inside the
+     pure `transitionApprovalState` function (§2), and nothing forces every
+     write path through that function before reaching `persistIssue`. A
+     caller that bypasses `applyApprovalTransition` and calls `persistIssue`
+     directly with a hand-built but structurally-legal `ApprovalTransition`
+     (any `actorId`, including one that never submitted or isn't active)
+     currently passes Guard A — no test exercises this today. This is the
+     same underlying gap as the `claims_handoff` wiring above (an
+     authorization layer in front of every write path, not just the
+     `applyApprovalTransition` entry point), not a new one — recorded
+     separately here because it's a concrete forgery vector, not just a
+     missing policy check.
 3. **Phase 2 — Dashboard**: Claude Artifact-based company board (capabilities:
    live state, multi-viewer, saved documents).
 4. **Phase 3 — ruclip-metaharness**: build-time + runtime bench suites,
