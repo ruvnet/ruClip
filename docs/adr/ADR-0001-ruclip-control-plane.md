@@ -104,6 +104,50 @@ adopting paperclip's own Node/React/Postgres stack:
      nightly *repo*-evolution loop — Autogenous governs runtime behavior,
      dream-machine governs the codebase. `docs/PLAN.md` records the
      concrete re-scoped roadmap phase.
+7b. **Amendment (2026-09-01, pre-acceptance)** — ruClip's scope expands
+   from "orchestrate AI agent employees" to "optimize every employee,
+   human and AI, working alongside the system" — the user's framing: "a
+   kind 10,000x multiplier." Concretely: analyze existing human employees'
+   work habits, calendars, emails, AI-meeting-recorder transcripts, and
+   other available signals; support direct messages, reminders, and
+   proactive nudges aimed at improving individual performance; learn
+   per-person over time how to best interact with each individual (tone,
+   timing, channel, intrusiveness) rather than applying one generic
+   policy; keep guidance subtle and proactive, not a surveillance
+   dashboard.
+
+   Architecturally, this treats human `OrgMember`s (already a first-class
+   entity in the Company/Goals/Issues schema per point 3) as subjects of
+   the *same* adaptive-learning loop originally scoped only for AI agent
+   employees, using components already in this ADR rather than new ones:
+   - **Per-person adaptation**: SONA + AgentDB pattern-store, scoped per
+     human `OrgMember` (not a global policy) — both already core to
+     `ruflo`.
+   - **Proactive delivery**: the `agentbbs` notification channel already
+     built for approval-gate/heartbeat events (with the `radio-moe`
+     Ed25519-signing layer added in the same phase as this amendment) is
+     reused as the DM/reminder/nudge channel — no separate comms system.
+   - **Signal ingestion is explicitly *not* part of the "ruvnet-only"
+     orchestration-substrate constraint** — calendar, email, and
+     meeting-transcript sources are inherently third-party SaaS surfaces
+     (Google Calendar/Gmail-style APIs, generic meeting-recorder
+     transcripts) that any real company's employees already use; ruClip
+     integrates with them as external data sources the same way it would
+     integrate with any company's existing tools, the same distinction
+     already drawn for Cloud Run/GCP infrastructure in point 9. What stays
+     ruvnet-only is the orchestration/learning/governance layer acting on
+     that data.
+   - **Privacy is a hard constraint, not an implementation detail**:
+     calendar/email/meeting-recording access is sensitive PII. Any signal
+     ingested must pass through this repo's existing AIDefence
+     PII-scanning discipline, carry ADR-323-style provenance tagging, and
+     require explicit per-employee opt-in — this is not built as an
+     always-on surveillance layer by default. This constraint is
+     load-bearing for acceptance, not a nice-to-have.
+
+   This is its own roadmap phase (Human Employee Augmentation), sequenced
+   after the Autogenous runtime-governance phase and dream-machine nightly
+   integration — see `docs/PLAN.md` §8 for the concrete phase placement.
 8. **Secrets**: wrap the existing GCP Secret Manager pattern already used
    for the npm publish signing key, rather than building a new secrets
    store.
@@ -140,6 +184,11 @@ adopting paperclip's own Node/React/Postgres stack:
 - `ruvector@0.2.25` pinned in this repo's CLAUDE.md vs. registry `0.3.0` is
   a pre-existing version-drift issue, unrelated to this decision, tracked
   separately.
+- Amendment 7b's human-employee-augmentation scope has no code impact on
+  what has already shipped (Company/Goals/Issues schema, approval-gate
+  state machine, claims authorization, budget-gated heartbeats, agentbbs
+  comms) — it reuses those primitives rather than requiring rework, and is
+  additive future scope, not a course correction.
 
 ## Links
 

@@ -172,6 +172,23 @@ GCP cron — reuse verbatim.
   needed for v1. GPU quota request is a separate, explicitly-budgeted future
   ask if ruClip ever needs local fine-tuning rather than hosted LLM calls.
 
+## 7a. Human Employee Augmentation (2026-09-01 amendment)
+
+ruClip's scope expands from "orchestrate AI agent employees" to "optimize
+every employee, human and AI, working alongside the system" — per the
+user: "a kind 10,000x multiplier." See ADR-0001 amendment 7b for the full
+rationale. Summary of the design, reusing already-shipped primitives:
+
+| Need | Backed by |
+|---|---|
+| Per-person adaptive learning (not a generic policy) | SONA + AgentDB pattern-store, scoped per human `OrgMember` |
+| Proactive DMs/reminders/nudges | `agentbbs` notification channel (already built, with `radio-moe` Ed25519 signing) — reused, no new comms system |
+| Calendar/email/meeting-transcript signal ingestion | External SaaS integrations (Google Calendar/Gmail-style APIs, generic meeting-recorder transcripts) — explicitly outside the "ruvnet-only" orchestration-substrate constraint, same as any real company's existing tools |
+| Privacy | Hard constraint: AIDefence PII scanning on every ingested signal, ADR-323 provenance tagging, explicit per-employee opt-in — never an always-on surveillance default |
+
+New roadmap phase (§8 Phase 6 below), sequenced after Autogenous runtime
+governance (Phase 4) and dream-machine nightly integration (Phase 5).
+
 ## 8. Phased roadmap
 
 1. **Phase 0 (this doc + ADR)** — plan review, then create `ruvnet/ruClip`
@@ -491,10 +508,26 @@ GCP cron — reuse verbatim.
    routine, first ledger rows. **Amended 2026-09-01**: rotation surface is
    codebase-only (§6) — no runtime `redblue` rotation here, that's Phase 4's
    job now.
-7. **Phase 6 (optional)** — LatentMesh edge-resilience integration for
+7. **Phase 6 (NEW, 2026-09-01, not started) — Human Employee Augmentation**
+   (see §7a above for the full design): per-person adaptive coaching for
+   human `OrgMember`s via calendar/email/meeting-transcript signal
+   ingestion, proactive nudges through the already-built `agentbbs`
+   channel, gated on explicit per-employee opt-in and AIDefence PII
+   scanning on every ingested signal (fail closed if consent or scanning
+   status is unclear — never an ambient default). Sequenced here,
+   deliberately after Phase 4 (Autogenous runtime governance) and Phase 5
+   (dream-machine nightly integration) per the amendment. Reuses SONA +
+   AgentDB pattern-store (scoped per `OrgMember`, not a global policy) and
+   the `agentbbs`/`radio-moe`-signed notification channel — no new comms
+   or learning infrastructure. Calendar/email/meeting-transcript connectors
+   are external SaaS integrations, outside the ruvnet-only orchestration
+   constraint (same distinction already drawn for GCP infra in §7). Not
+   started — design (which concrete first slice, and its privacy-gate
+   details) is the next step, not code.
+8. **Phase 7 (optional)** — LatentMesh edge-resilience integration for
    agents operating without cloud connectivity, if a concrete use case
    emerges (e.g. via `ruflo-iot-cognitum`).
-8. **Phase 1f (NEW, 2026-09-01, not started) — `radio-moe` cross-provider
+9. **Phase 1f (NEW, 2026-09-01, not started) — `radio-moe` cross-provider
    agent-dispatch**: route an agent-employee's actual dispatched work (the
    `fireHeartbeat` agent-assignee wake step, `HEARTBEATS-AND-COMMS.md` §3
    step 4) through `radio-moe@0.3.1`'s `Gate`/`Peer`/`Mesh` and its real
@@ -515,7 +548,7 @@ GCP cron — reuse verbatim.
    — `radio-moe`'s only role in the shipped code is the signing layer
    inside `AgentBbsNotificationChannel`. This Phase 1f item is unaffected;
    it was already describing a distinct, not-yet-built integration point.)
-9. **Throughout** — test/validate/secure/benchmark/optimize each phase via
+10. **Throughout** — test/validate/secure/benchmark/optimize each phase via
    the standard swarm protocol in this repo's `CLAUDE.md`, using
    `ruflo-testgen`, `ruflo-security-audit`, `metaharness security_bench`, and
    `ruflo-cost-tracker` for spend gates.
