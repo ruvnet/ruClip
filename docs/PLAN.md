@@ -412,6 +412,36 @@ GCP cron — reuse verbatim.
      Phase 1 (Control plane core) is now feature-complete against its
      original scope, modulo the still-open items named throughout this
      section.
+   - **AgentRadio correction, final revision (round 5)**: the "honest stub"
+     bullet just above turned out to be wrong on one narrow point —
+     `radio-moe@0.3.1`/`@metaharness/radio@0.1.0` ARE real, published npm
+     packages (confirmed via `npm view` and by installing and reading the
+     actual `dist/*.d.ts`, not the README alone). The architect's follow-up
+     review (`HEARTBEATS-AND-COMMS.md` §0 Finding D, second revision) then
+     established the more precise point: neither package's real API is a
+     notification/pub-sub bus, so no standalone
+     `AgentRadioNotificationChannel implements NotificationChannel` was
+     built. Final shape: `src/control-plane/comms/
+     agentradio-notification-channel.ts` is deleted; `radio-moe`'s real
+     `PeerIdentity`/`signFrame`/`verifyFrame` are used *inside*
+     `AgentBbsNotificationChannel` as an optional signing layer — every
+     published notification carries a genuine ed25519 signature
+     (`radioMoeSignature`) when `radio-moe` is installed (an optional peer
+     dependency, and also a `devDependency` so this repo's own tests
+     exercise the real signed/verified path deterministically), degrading
+     silently to the pre-signing behavior when it isn't. This is the first
+     integration anywhere in ruClip that imports a peer package directly
+     rather than only calling `bridge-client.ts`'s `callTool` — there is no
+     MCP tool wrapping radio-moe's signing primitives (checked: no
+     `radio-moe`/`AgentRadio` reference anywhere in
+     `v3/@claude-flow/cli/src/mcp-tools/`), so there was no bridge path
+     available. 177 tests total (up from 174), `tsc --strict` clean.
+     `radio-moe`'s real notification-*delivery*-shaped gap — no
+     notification-shaped `Wire` variant exists in its real, closed signed
+     transport protocol (`AdvertWire | DispatchWire | LogitFrame |
+     TextFrame`) — is documented in `HEARTBEATS-AND-COMMS.md` §5 for anyone
+     revisiting this later; radio-moe's real separate role (cross-provider
+     agent-work dispatch) is unchanged and still tracked as Phase 1f below.
 3. **Phase 2 — Dashboard**: Claude Artifact-based company board (capabilities:
    live state, multi-viewer, saved documents).
 4. **Phase 3 — ruclip-metaharness**: build-time bench suite, `score`/`genome`

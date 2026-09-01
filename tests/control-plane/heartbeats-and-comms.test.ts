@@ -3,12 +3,15 @@
  * HeartbeatSchedule persistence + authorization reuse, fireHeartbeat's two
  * gates, checkOperatingBudget/setOperatingBudget (including the
  * memory_list-is-metadata-only finding this slice discovered), the
- * AgentBBS-backed NotificationChannel, the AgentRadio stub, and
+ * AgentBBS-backed NotificationChannel (including its optional real
+ * radio-moe signing layer — there is no separate AgentRadio channel, see
+ * agentbbs-notification-channel.ts's file header for why), and
  * applyApprovalTransition's new deps.notifications wiring.
  *
  * No live AgentDB/memory/agentbbs instance — every call goes through
  * mockBridge (tests/support/mock-bridge.ts), same as the rest of this
- * suite.
+ * suite. radio-moe itself IS real here (a devDependency, see package.json)
+ * so the signing tests exercise the actual published API.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -29,8 +32,9 @@ import {
   AgentBbsNotificationChannel,
   registerCompanyCommsRoom,
   mintHumanCommsAccess,
+  verifySignedNotification,
+  type RadioMoeSignature,
 } from '../../src/control-plane/comms/agentbbs-notification-channel.js';
-import { AgentRadioNotificationChannel } from '../../src/control-plane/comms/agentradio-notification-channel.js';
 import { assertValidHeartbeatSchedule, SchemaValidationError } from '../../src/control-plane/schema/validation.js';
 import type { HeartbeatSchedule } from '../../src/control-plane/schema/heartbeat-schedule.js';
 import type { Company } from '../../src/control-plane/schema/company.js';
@@ -602,14 +606,65 @@ test('mintHumanCommsAccess returns the real token bundle on success and {degrade
   assert.deepEqual(degraded, { degraded: true });
 });
 
-// --- AgentRadioNotificationChannel (stub) -------------------------------------
+// --- AgentBbsNotificationChannel: real radio-moe signing layer ---------------
+//
+// radio-moe is installed as a real devDependency (package.json) precisely so
+// these tests exercise the actual, published radio-moe@0.3.1
+// PeerIdentity/signFrame/verifyFrame API — not a mock of it. There is no
+// AgentRadioNotificationChannel: neither radio-moe nor @metaharness/radio's
+// real API is a notification bus (see agentbbs-notification-channel.ts's file
+// header) — radio-moe only adds a genuine signature to what agentbbs
+// delivers.
 
-test('AgentRadioNotificationChannel returns {delivered:false, degraded:true} unconditionally for any event, and never throws', async () => {
-  const channel = new AgentRadioNotificationChannel();
-  for (const kind of ['heartbeat-fired', 'heartbeat-budget-blocked', 'issue-approval-transition', 'budget-threshold-crossed'] as const) {
-    const result = await channel.publish({ kind, companyId: 'co-1', subjectRef: 'x', payload: {}, occurredAt: now });
-    assert.deepEqual(result, { delivered: false, degraded: true });
-  }
+test('AgentBbsNotificationChannel.publish attaches a real radio-moe signature that verifySignedNotification confirms', async () => {
+  const { calls, config } = mockBridge({
+    'federation_bbs_publish': () => ({ success: true, envelopeId: 'env-1' }),
+  });
+  const channel = new AgentBbsNotificationChannel('room-1', config);
+  const event: NotificationEvent = {
+    kind: 'issue-approval-transition',
+    companyId: 'co-1',
+    subjectRef: 'issue:issue-1',
+    payload: { issueId: 'issue-1', action: 'approve' },
+    occurredAt: now,
+  };
+
+  const result = await channel.publish(event);
+  assert.equal(result.delivered, true);
+
+  const publishCall = calls.find((c) => c.toolName === 'federation_bbs_publish');
+  const payload = publishCall!.args.payload as { radioMoeSignature?: RadioMoeSignature };
+  assert.ok(payload.radioMoeSignature, 'expected a radio-moe signature attached to the published payload');
+  assert.equal(typeof payload.radioMoeSignature!.signature, 'string');
+  assert.equal(typeof payload.radioMoeSignature!.publicKeyDerHex, 'string');
+
+  const verified = await verifySignedNotification(event, payload.radioMoeSignature!);
+  assert.equal(verified, true);
+});
+
+test('verifySignedNotification rejects a signature computed over a different event (tamper-evidence)', async () => {
+  const captured: { payload?: Record<string, unknown> } = {};
+  const { config } = mockBridge({
+    'federation_bbs_publish': (args) => {
+      captured.payload = args.payload as Record<string, unknown>;
+      return { success: true, envelopeId: 'env-1' };
+    },
+  });
+  const channel = new AgentBbsNotificationChannel('room-1', config);
+  const original: NotificationEvent = {
+    kind: 'issue-approval-transition',
+    companyId: 'co-1',
+    subjectRef: 'issue:issue-1',
+    payload: { issueId: 'issue-1', action: 'approve' },
+    occurredAt: now,
+  };
+
+  await channel.publish(original);
+  const signature = captured.payload!.radioMoeSignature as RadioMoeSignature;
+
+  const tamperedEvent: NotificationEvent = { ...original, payload: { issueId: 'issue-1', action: 'reject' } };
+  const verified = await verifySignedNotification(tamperedEvent, signature);
+  assert.equal(verified, false);
 });
 
 // --- applyApprovalTransition: deps.notifications wiring -----------------------

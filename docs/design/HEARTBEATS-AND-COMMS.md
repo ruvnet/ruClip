@@ -359,20 +359,68 @@ AgentBbsNotificationChannel implements NotificationChannel
   scoped, time-limited access to the room — not auto-called by the
   heartbeat/approval flows.
 
-### AgentRadio (`radio-moe@0.3.1` / `@metaharness/radio@0.1.0`) — real packages, wrong shape for this seam (corrected per Finding D)
+### Optional radio-moe signing layer inside `AgentBbsNotificationChannel` (final revision, implemented)
 
-**No `AgentRadioNotificationChannel` is designed here** — not because the
-packages don't exist (they do, verified real, §0 Finding D), but because
-neither one's real, read API implements a "publish an event, a
-human/cockpit gets notified" contract. `@metaharness/radio`'s `RadioBus` is
-in-process/in-memory and explicitly never crosses the network;
-`radio-moe`'s `ActionGate`/`Mesh`/`MixtureState` govern *which LLM backend's
-output gets to release as an action*, not event delivery. Forcing either
-into `NotificationChannel`'s shape would mean either faking persistence
-`RadioBus` doesn't have, or repurposing a signed-quorum action-release gate
-as a notification bus — both wrong. `AgentBbsNotificationChannel` is the
-correct and only backend for this interface, full stop, not a stand-in
-until something better ships.
+`radio-moe` does have one real, narrow, correctly-scoped role in this
+comms seam after all — not as a second `NotificationChannel`
+implementation (§ below still stands: neither package is a notification
+bus), but as a **signing layer inside `AgentBbsNotificationChannel`
+itself**. `PeerIdentity.generate()` + `signFrame`/`verifyFrame` (verified
+directly against the installed `radio-moe@0.3.1` `dist/*.d.ts`, and
+smoke-tested against the real package — not assumed) give any payload a
+genuine ed25519 signature; `publish()` uses exactly that, and only that,
+to attach a `radioMoeSignature: {signature, publicKeyDerHex, peerId}` to
+every notification's payload before handing it to
+`federation_bbs_publish`, giving ruClip's own notifications real
+tamper-evidence/non-repudiation. Delivery is still 100% agentbbs — signing
+and transport are separate concerns in radio-moe itself (`AgentFrame` has
+no delivery mechanism of its own; only its closed `Wire` protocol reaches
+another peer, and that protocol has no notification-shaped variant — see
+§0 Finding D's precise wire-protocol analysis below), so there was never a
+way to make radio-moe the transport without either hijacking one of its
+four real `Wire` kinds (fabrication) or relying on its in-process-only
+`Fabric` (unable to prove cross-process delivery in this environment).
+
+Mechanics: `radio-moe` is an **optional** peer dependency (package.json,
+same ADR-150 pattern as `agentbbs`) — when it isn't installed,
+`publish()` silently skips the signature and behaves exactly as it did
+before this revision, no behavior change. There is no MCP tool wrapping
+radio-moe's signing primitives (checked: no `radio-moe`/`AgentRadio`
+reference anywhere in `v3/@claude-flow/cli/src/mcp-tools/`), so — unlike
+every other integration in `store/agentdb-adapter.ts` and this comms
+module, which only ever call `bridge-client.ts`'s `callTool` — this is the
+first, deliberate exception: a genuine `import('radio-moe')` directly in
+ruClip's own process. `radio-moe` is also listed as a `devDependency`
+(pinned to the same real published version) purely so this repo's own
+test suite exercises the real signed/verified path deterministically —
+that does not make it a hard runtime dependency of anything ruClip ships.
+The signing identity is ephemeral per process (`PeerIdentity.generate()`,
+never persisted, nothing about the private key logged or exposed) —
+mirrors `v3/@claude-flow/cli/src/mcp-tools/agentbbs-tools.ts`'s own
+`getSigningKey()` pattern for human-join tokens.
+
+### AgentRadio (`radio-moe@0.3.1` / `@metaharness/radio@0.1.0`) as a standalone channel — real packages, wrong shape for that (corrected per Finding D)
+
+**No standalone `AgentRadioNotificationChannel implements
+NotificationChannel` is designed here** — not because the packages don't
+exist (they do, verified real, §0 Finding D), but because neither one's
+real, read API implements a "publish an event, a human/cockpit gets
+notified" contract. `@metaharness/radio`'s `RadioBus` is in-process/
+in-memory and explicitly never crosses the network; `radio-moe`'s real
+signed wire protocol is a closed union
+(`Wire = AdvertWire | DispatchWire | LogitFrame | TextFrame`, verified in
+the installed package's `dist/types.d.ts`) built for its actual job —
+mixture-of-experts routing/dispatch/streaming — with no notification-
+shaped variant, and `Peer`'s only public methods are `host(expert)` and
+`route(chunk, kind)`, no generic broadcast. Forcing either package's real
+primitives into `NotificationChannel`'s shape as an independent channel
+would mean either faking persistence `RadioBus` doesn't have, or hijacking
+one of radio-moe's four real `Wire` kinds for a purpose it doesn't serve
+(e.g. stuffing notification JSON into `TextFrame.tokens`) — the same
+category of fabrication this codebase has consistently avoided elsewhere.
+`AgentBbsNotificationChannel` (now with the signing layer above) is the
+correct and only *channel* for this interface, full stop — radio-moe
+contributes a real capability (signing) to that one channel instead.
 
 **`radio-moe`'s real, separate, legitimate role in ruClip**: routing an
 agent employee's actual work across Claude/Codex/OpenRouter/Gemini backends
@@ -498,8 +546,11 @@ this slice touches the authorization layer, and it's pure reuse.
   passing → wake published, pause-on-block (not silent skip), degraded
   comms never throwing/blocking the domain operation, the `NotificationKind
   → msgType` mapping, `verifyActorHoldsClaim` reuse on schedule
-  create/pause/resume, and the `AgentRadioNotificationChannel` stub
-  returning `degraded: true` rather than being silently skipped in tests.
+  create/pause/resume, and — against the real, installed `radio-moe`
+  devDependency, not a mock of it — `AgentBbsNotificationChannel.publish`
+  attaching a genuine, `verifySignedNotification`-confirmable radio-moe
+  signature, and that signature failing verification when checked against
+  a tampered event.
 
 Please implement verbatim — if `listDueHeartbeats`'s query shape or
 `memory_store`'s upsert assumption (§4) turns out wrong against a real
