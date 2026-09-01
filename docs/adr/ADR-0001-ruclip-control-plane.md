@@ -45,8 +45,11 @@ established:
   "Cognitum" — the actual org is `ruv.net` (id `885436984033`).
 
 Full findings, capability-mapping table, phased roadmap, and open risks are
-recorded in `docs/ruclip/PLAN.md` (staged in branch `explore/ruclip-mission`
-pending review — `ruvnet/ruClip` is intentionally not created yet).
+recorded in `docs/PLAN.md` (the research and initial scaffold were staged in
+`ruvnet/ruflo` branch `explore/ruclip-mission` before this repo was created
+via `ruflo eject`; this ADR and `docs/PLAN.md` are this repo's own copies,
+kept in sync with amendments made upstream — see the 2026-09-01 amendment
+below).
 
 ## Decision
 
@@ -81,6 +84,26 @@ adopting paperclip's own Node/React/Postgres stack:
    offline/field operation (via `ruflo-iot-cognitum`), since it solves a
    connectivity-transport problem orthogonal to company orchestration, and
    is itself still a "research prototype."
+7a. **Amendment (2026-09-01, pre-acceptance)** — `ruvnet/autogenous`
+   ("Governed Evolutionary Software," research-prototype status) is folded
+   in for two capabilities, replacing what was previously scoped as
+   from-scratch work:
+   - **Cross-provider agent adapter**: `packages/radio-moe` (AgentRadio) is
+     a real, ed25519-signed, live-verified streaming mixture-of-agents mesh
+     already running Claude/Codex/OpenRouter/Gemini backends. This
+     supersedes point 4's prior "out of scope for v1" stance on adapters
+     beyond Claude+Codex — ruClip's agent "employees" route through
+     AgentRadio rather than a bespoke adapter layer.
+   - **Runtime governance layer**: Autogenous's antibody-package model
+     (typed mutation → verifier admission → replay-measured fitness →
+     staged canary 1→10→50→100% → signed promotion or automatic rollback,
+     authority-never-expands as a type-level invariant) replaces the
+     from-scratch "runtime genome" sketched in §5 of `docs/PLAN.md` as the
+     mechanism for governing the *live* company's agent-taken actions,
+     complementing rather than duplicating `metaharness`/`dream-machine`'s
+     nightly *repo*-evolution loop — Autogenous governs runtime behavior,
+     dream-machine governs the codebase. `docs/PLAN.md` records the
+     concrete re-scoped roadmap phase.
 8. **Secrets**: wrap the existing GCP Secret Manager pattern already used
    for the npm publish signing key, rather than building a new secrets
    store.
@@ -123,6 +146,8 @@ adopting paperclip's own Node/React/Postgres stack:
 - ADR-103 — signed witness manifest pattern (audit trail reused here)
 - ADR-150 — MetaHarness integration surfaces (governance substrate reused here)
 - ADR-164 — agentbbs federation Phase 1 (comms layer reused here)
+- `ruvnet/autogenous` ADR-390 through ADR-395–402 (radio-moe) — cross-provider
+  adapter and runtime governance, folded in per amendment 7a above
 - `docs/PLAN.md` — working implementation plan, mapping table, and
   phased roadmap (may evolve without a new ADR unless the component choices
   above change)

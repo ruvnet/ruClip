@@ -1,9 +1,11 @@
-# ruClip — Architecture & Implementation Plan (draft for review)
+# ruClip — Architecture & Implementation Plan
 
-Status: DRAFT — staged in `ruvnet/ruflo` branch `explore/ruclip-mission` pending
-review. The `ruvnet/ruClip` repo is intentionally **not created yet** — that is
-the one explicit checkpoint the user asked for before autonomous build
-continues.
+Status: LIVE — this repo (`ruvnet/ruClip`) was created via `ruflo eject` from
+the scaffold originally staged in `ruvnet/ruflo` branch `explore/ruclip-mission`,
+and Phase 1 (§8) is under active development (see delivery notes below). This
+file and `docs/adr/ADR-0001-ruclip-control-plane.md` are this repo's own
+copies, kept in sync with amendments approved upstream (most recently the
+2026-09-01 `ruvnet/autogenous` amendment throughout this document).
 
 ## 1. What this is
 
@@ -22,10 +24,11 @@ already owns, rather than adopting paperclip's Node/React/Postgres stack.
 | `ruflo` (this repo) | 39k★, 60+ plugins, Agent Teams (`SendMessage`), `claims_*` work-ownership, `witness` signed audit manifest | Core orchestration substrate |
 | `metaharness` (npm `0.4.8`) + `@metaharness/router`, `@metaharness/redblue` | Already integrated, ADR-150 | Governs quality/readiness of both ruClip-the-product and every agent "hire" |
 | `ruvector` (npm `0.3.0` — CLAUDE.md's `0.2.25` pin is stale, separate fix needed) | HNSW, RaBitQ, RVF containers | Semantic memory backing every agent + the company's shared knowledge base |
-| `agentbbs` (npm `0.2.1`, `github.com/ruvnet/AgentBBS`) | **Already wired** via `plugins/ruflo-bbs-federation` (ADR-164), **already deployed**: 6 live Cloud Run services in `cognitum-20260110` (`agentbbs-web`, `agentbbs-self-*`, `agentbbs-test-*`, `agentbbs-think-pro-*`, `agentbbs-prof-qe-*`, `agentbbs-aass1122-*`) | Human+agent shared comms layer — the Slack-equivalent from the mission brief |
+| `agentbbs` (npm `0.2.1`, `github.com/ruvnet/AgentBBS`) | **Already wired** via `plugins/ruflo-bbs-federation` (ADR-164), **already deployed**: 6 live Cloud Run services in `cognitum-20260110` (`agentbbs-web`, `agentbbs-self-*`, `agentbbs-test-*`, `agentbbs-think-pro-*`, `agentbbs-prof-qe-*`, `agentbbs-aass1122-*`) | Human+agent shared comms layer — the Slack-equivalent from the mission brief. **Amended 2026-09-01**: no longer assumed the sole comms channel — evaluated alongside/via AgentRadio (below), whose mesh may itself carry agent-to-agent traffic, with agentbbs remaining the human-visible board. Phase 1 wiring decides the concrete split (see §8). |
 | [`ruvnet/LatentMesh`](https://github.com/ruvnet/LatentMesh) (Rust, 47 ADRs, "research prototype" status, has a `latentmesh-agentbbs-bridge` crate already) | Offline/edge agent mesh over LoRa/radio/audio — NOT a company-orchestration primitive | **Optional, Phase 2+**: only relevant if a "hire" needs to operate somewhere without cloud connectivity (field ops, IoT — see `ruflo-iot-cognitum` plugin). Not on the critical path for v1. |
-| [`ruvnet/dream-machine`](https://github.com/ruvnet/dream-machine) (npm `dream-machine`, already running nightly against `ruvnet/ruflo` and `ruvnet/metaharness`) | Config-driven nightly evidence-gated evolution engine: `ledger → research → hypothesis → candidate → baseline → evaluation → adversarial critique → bounded Darwin → flywheel evidence → witness → issue → draft PR → ledger row`. **Never merges — draft PRs only.** | This *is* "nightly dream machine tasks for ruvnet." Integration = generate a `dream.config.json` for `ruvnet/ruClip` and register it the same way ruflo/metaharness already are. No new nightly system needed. |
+| [`ruvnet/dream-machine`](https://github.com/ruvnet/dream-machine) (npm `dream-machine`, already running nightly against `ruvnet/ruflo` and `ruvnet/metaharness`) | Config-driven nightly evidence-gated evolution engine: `ledger → research → hypothesis → candidate → baseline → evaluation → adversarial critique → bounded Darwin → flywheel evidence → witness → issue → draft PR → ledger row`. **Never merges — draft PRs only.** | This *is* "nightly dream machine tasks for ruvnet." Integration = generate a `dream.config.json` for `ruvnet/ruClip` and register it the same way ruflo/metaharness already are. No new nightly system needed. Governs the *codebase* only — see the `ruvnet/autogenous` row below for the runtime counterpart. |
 | `@claude-flow/codex` dual-mode | Claude+Codex peer execution | Cross-model verification for ruClip's own build and for high-stakes agent "employee" decisions |
+| [`ruvnet/autogenous`](https://github.com/ruvnet/autogenous) (Rust, research-prototype, ADR-390–402) — **added 2026-09-01** | Governed evolutionary control plane: typed mutations (AGL) → verifier admission → replay-measured fitness → staged canary 1→10→50→100% → cryptographically-signed promotion or automatic rollback, authority-never-expands as a type invariant. `packages/radio-moe` (AgentRadio): a real, ed25519-signed, live-verified streaming mixture-of-agents mesh already running Claude/Codex/OpenRouter/Gemini backends. | **Two roles, replacing prior placeholders**: (1) AgentRadio *is* ruClip's cross-provider agent adapter — supersedes the earlier "out of scope for v1" stance on non-Claude/Codex adapters (§3 item 4, now resolved). (2) The antibody/canary/rollback machinery *is* ruClip's runtime governance layer — replaces the from-scratch "runtime genome" previously sketched in §5, now its own roadmap phase (§8 Phase 4) rather than folded into `ruclip-metaharness`. Governs live agent-taken actions; complements (does not duplicate) dream-machine's nightly repo-evolution loop. |
 
 ## 3. Gaps (confirmed absent, need building)
 
@@ -45,9 +48,13 @@ already owns, rather than adopting paperclip's Node/React/Postgres stack.
    This is the one genuinely new domain model ruClip needs to build — proposed
    as a thin schema layer over AgentDB (v3/@claude-flow/memory), not a new
    database.
-4. **Cross-provider agent adapter beyond Claude+Codex** (paperclip supports
-   OpenClaw, arbitrary webhooks). Out of scope for v1 — ruvnet-only per the
-   mission brief anyway.
+4. **Cross-provider agent adapter beyond Claude+Codex — superseded (2026-09-01
+   amendment).** Previously scoped as out-of-v1 (paperclip supports OpenClaw,
+   arbitrary webhooks; ruvnet-only per the mission brief anyway). No longer a
+   gap: `ruvnet/autogenous`'s `packages/radio-moe` (AgentRadio) is a real,
+   already-running cross-provider mesh (Claude/Codex/OpenRouter/Gemini) —
+   ruClip's agent "employees" route through it instead of a bespoke adapter.
+   See §2's `ruvnet/autogenous` row and §8 Phase 1.
 
 ## 4. Architecture (v1)
 
@@ -66,24 +73,34 @@ already owns, rather than adopting paperclip's Node/React/Postgres stack.
 └───────┬───────────────────┬────────────────────┬────────────────────┘
         │                   │                    │
    ┌────▼────┐        ┌─────▼─────┐        ┌─────▼──────┐
-   │ Agent    │        │ agentbbs   │        │ Semantic    │
-   │ "employees" │◄──►│ (human+agent│◄──►    │ memory      │
-   │ (ruflo Agent│     │ comms, live│        │ (ruvector +  │
-   │  Teams,      │    │ Cloud Run) │        │  AgentDB)    │
-   │  Claude+Codex│    └────────────┘        └─────────────┘
-   │  peers)      │
-   └──────────────┘
+   │ Agent       │     │ agentbbs +  │       │ Semantic    │
+   │ "employees" │◄──►│ AgentRadio  │◄──►    │ memory      │
+   │ (ruflo Agent│     │ (human+agent│        │ (ruvector +  │
+   │  Teams,      │    │ comms, live │        │  AgentDB)    │
+   │  routed via  │    │ Cloud Run,  │        └─────────────┘
+   │  AgentRadio  │    │ + AgentRadio│
+   │  mesh)       │    │ cross-      │
+   │             │     │ provider    │
+   │             │     │ mesh)       │
+   └──────────────┘    └────────────┘
         │
    ┌────▼─────────────────────────────────────┐
-   │ Custom "ruclip-metaharness" (governs both  │
-   │ the build of ruClip AND its runtime ops)   │
-   │ — score/genome/bench/redblue/flywheel      │
+   │ Custom "ruclip-metaharness" — build-time   │
+   │ genome only, governs the ruClip codebase   │
+   │ — score/genome/bench                       │
+   └─────────────────────────────────────────┘
+        │
+   ┌────▼─────────────────────────────────────┐
+   │ Autogenous runtime governance (governs the │
+   │ LIVE company): antibody → verifier admit → │
+   │ canary 1→10→50→100% → signed promotion or  │
+   │ automatic rollback                         │
    └─────────────────────────────────────────┘
         │
    ┌────▼─────────────────────────────────────┐
    │ dream-machine nightly cycle (existing,    │
    │ generalized engine — config only, no new  │
-   │ nightly system)                           │
+   │ nightly system; governs the CODEBASE only)│
    └─────────────────────────────────────────┘
 ```
 
@@ -98,17 +115,26 @@ constraint:
   *codebase itself* against a bench suite covering — org-chart schema
   correctness, approval-gate enforcement (no action executes without a
   satisfied gate), budget-hard-stop correctness, audit-trail completeness
-  (every state transition witnessed), agentbbs message delivery, dashboard
-  Artifact capability wiring.
-- **Runtime genome** (`metaharness redblue` + `flywheel`): once ruClip is
-  live, adversarially tests the *running company* — can an agent "employee"
-  bypass a budget cap, forge an approval, or post to agentbbs without
-  authorization? Findings feed `flywheel receipts` (immutable) and require an
-  explicit `flywheel promote` — never auto-applied, mirroring dream-machine's
-  "evaluation is not promotion" invariant.
+  (every state transition witnessed), agentbbs/AgentRadio message delivery,
+  dashboard Artifact capability wiring.
+- **Runtime genome — superseded by Autogenous (2026-09-01 amendment)**:
+  rather than a from-scratch `redblue`/`flywheel` adversarial harness for the
+  *live* company, ruClip adopts `ruvnet/autogenous`'s antibody-package model
+  directly — a runtime failure (a forged approval attempt, a budget-cap
+  bypass, an unauthorized agentbbs/AgentRadio post) becomes a typed, signed
+  antibody candidate, admitted only if it beats the parent behavior on a
+  labeled corpus, staged through canary 1→10→50→100%, and automatically
+  rolled back on regression. This is a stricter, already-implemented version
+  of the originally-sketched `redblue`+`flywheel` design — see §8 Phase 4,
+  its own roadmap phase rather than folded into `ruclip-metaharness`.
+  `metaharness`/`flywheel` remains the mechanism for *build-time* (nightly,
+  via dream-machine) evolution; Autogenous governs *runtime* evolution. Both
+  share the same "evaluation is not promotion without a signed gate"
+  discipline.
 
-Both are new `bench.json` suites under `ruvnet/ruClip/.harness/`, authored
-with `metaharness bench verify`, not a new evaluation engine.
+The build-time genome above is a new `bench.json` suite under
+`ruvnet/ruClip/.harness/`, authored with `metaharness bench verify`, not a
+new evaluation engine.
 
 ## 6. Nightly dream-machine integration (concrete, not new infra)
 
@@ -123,9 +149,12 @@ npx dream-machine schedule dream.config.json --env <cloud-env-id> --out routine.
 Then a `/schedule` cloud routine (same mechanism already running nightly for
 `ruvnet/ruflo` and `ruvnet/metaharness`, cron `0 9 * * *`) is created pointing
 at the bootstrap prompt. `dream.config.json`'s rotation surface for ruClip
-should include: the two new bench suites above, `redblue` adversarial runs
-against the runtime, and `LEDGER.md` rows under `docs/dream-cycle/`. No new
-nightly scheduler, no new GCP cron — reuse verbatim.
+should include: the build-time bench suite from §5 above, and `LEDGER.md`
+rows under `docs/dream-cycle/`. **Amended 2026-09-01**: no `redblue`
+adversarial-runtime rotation here — that surface belongs to Autogenous (§8
+Phase 4) now, not dream-machine; this loop stays codebase-only, mirroring
+`ruflo`/`metaharness`'s own nightly cycles. No new nightly scheduler, no new
+GCP cron — reuse verbatim.
 
 ## 7. GCP footprint (confirmed this session, read-only)
 
@@ -151,7 +180,12 @@ nightly scheduler, no new GCP cron — reuse verbatim.
    project into a standalone harness — not a fresh `gh repo create` from
    nothing).
 2. **Phase 1 — Control plane core**: Company/Goals/Issues schema on AgentDB,
-   budget-gated heartbeats, approval gates, signed audit trail, agentbbs wiring.
+   budget-gated heartbeats, approval gates, signed audit trail,
+   agentbbs/AgentRadio comms wiring. **Amended 2026-09-01**: agentbbs and
+   AgentRadio (packages/radio-moe, §2) are evaluated together here — AgentRadio
+   is also where agent "employees'" cross-provider routing (Claude/Codex/
+   OpenRouter/Gemini) is wired, not a separate phase, since it's foundational
+   to how employees communicate and act from day one.
    - **Delivered this iteration** (commits `2952348`..`13ac549`): the
      Company/Goals/Issues schema (types + `assertValid*` validation) and the
      AgentDB adapter (hierarchical store/recall, tier placement, causal edges
@@ -301,14 +335,31 @@ nightly scheduler, no new GCP cron — reuse verbatim.
      not started.
 3. **Phase 2 — Dashboard**: Claude Artifact-based company board (capabilities:
    live state, multi-viewer, saved documents).
-4. **Phase 3 — ruclip-metaharness**: build-time + runtime bench suites,
-   redblue adversarial harness, flywheel promotion gate.
-5. **Phase 4 — Dream-machine nightly integration**: config + `/schedule`
-   routine, first ledger rows.
-6. **Phase 5 (optional)** — LatentMesh edge-resilience integration for
+4. **Phase 3 — ruclip-metaharness**: build-time bench suite, `score`/`genome`
+   gates against the ruClip codebase. **Amended 2026-09-01**: no longer
+   includes a runtime bench suite, `redblue`, or `flywheel` — that scope moved
+   to Phase 4 below, so this phase governs the codebase only, matching §5's
+   updated split.
+5. **Phase 4 (NEW, 2026-09-01) — Autogenous runtime-governance integration**:
+   wire `ruvnet/autogenous`'s antibody-package model as ruClip's live-company
+   governance layer — typed mutation (a runtime failure: forged approval,
+   budget-cap bypass, unauthorized agentbbs/AgentRadio post) → verifier
+   admission → replay-measured fitness against a labeled corpus → staged
+   canary 1→10→50→100% → cryptographically-signed promotion or automatic
+   rollback. Its own phase, not folded into Phase 3, because it governs
+   runtime behavior of the *live* company rather than the codebase — see §5's
+   "superseded" note and ADR-0001 amendment 7a for why it's kept distinct
+   from `ruclip-metaharness`'s build-time genome and from dream-machine's
+   nightly repo-evolution loop (Phase 5 below), which it complements rather
+   than duplicates.
+6. **Phase 5 — Dream-machine nightly integration**: config + `/schedule`
+   routine, first ledger rows. **Amended 2026-09-01**: rotation surface is
+   codebase-only (§6) — no runtime `redblue` rotation here, that's Phase 4's
+   job now.
+7. **Phase 6 (optional)** — LatentMesh edge-resilience integration for
    agents operating without cloud connectivity, if a concrete use case
    emerges (e.g. via `ruflo-iot-cognitum`).
-7. **Throughout** — test/validate/secure/benchmark/optimize each phase via
+8. **Throughout** — test/validate/secure/benchmark/optimize each phase via
    the standard swarm protocol in this repo's `CLAUDE.md`, using
    `ruflo-testgen`, `ruflo-security-audit`, `metaharness security_bench`, and
    `ruflo-cost-tracker` for spend gates.
