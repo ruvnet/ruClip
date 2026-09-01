@@ -152,6 +152,28 @@ nightly scheduler, no new GCP cron — reuse verbatim.
    nothing).
 2. **Phase 1 — Control plane core**: Company/Goals/Issues schema on AgentDB,
    budget-gated heartbeats, approval gates, signed audit trail, agentbbs wiring.
+   - **Delivered this iteration** (commits `2952348`..`13ac549`): the
+     Company/Goals/Issues schema (types + `assertValid*` validation) and the
+     AgentDB adapter (hierarchical store/recall, tier placement, causal edges
+     for `reports_to`/`parent_of`/`blocks`/`assigned_to`/`belongs_to`),
+     covered by 70 tests (69 pass, 1 todo), `tsc --strict` clean, and a
+     security pass that closed a key-collision/entity-confusion vuln (id
+     charset restricted to `[A-Za-z0-9_-]{1,256}` in both the schema
+     validators and the adapter's key builders — see commit `13ac549`).
+   - **Still remaining for Phase 1**: budget-gated heartbeats,
+     approval-gate *enforcement* (schema has `approvalState`/`budgetImpact`
+     fields, but no `transitionApprovalState`-equivalent function exists
+     anywhere in `src/control-plane` — a raw write can currently set
+     `approvalState: 'approved'` directly, with no tamper-evidence such as
+     approver id/timestamp/signature, and no enforcement of the
+     draft→pending→approved/rejected state machine per
+     `docs/design/DOMAIN-MODEL.md` §3), signed audit-trail wiring (no
+     witness/ADR-103 hook point yet on Issue state transitions — recommend
+     the eventual gate-enforcement layer write a witness entry in the same
+     transaction as any `approvalState` transition, and have
+     `assertValidIssue`/`persistIssue` reject a `done`-with-positive-
+     `budgetImpact` write that doesn't cite one), and agentbbs wiring (not
+     started).
 3. **Phase 2 — Dashboard**: Claude Artifact-based company board (capabilities:
    live state, multi-viewer, saved documents).
 4. **Phase 3 — ruclip-metaharness**: build-time + runtime bench suites,
