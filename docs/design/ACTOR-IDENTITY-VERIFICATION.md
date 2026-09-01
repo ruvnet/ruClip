@@ -217,17 +217,59 @@ anywhere in ruClip today** (Phase 2's dashboard, still unbuilt, is the
 natural home for it). Building a full identity-provider integration is its
 own project, out of scope for a "design the missing primitive" task.
 
-**Decided (2026-09-01, team-lead): option (a), block.** Until real human
-credential issuance exists (Phase 2's dashboard/auth), any call where the
-resolved `OrgMember.kind === 'human'` and no valid `ActorCredential` is
-presented is refused outright — `ActorIdentityVerificationError`, no
-fallback to the weaker pre-existing check. No approval decision, comms-room
-registration, heartbeat action, or consent change can be attributed to a
-human actor until real issuance ships. Fail closed for humans specifically,
-not just a documented risk — matching the fail-closed discipline this
-domain has held throughout. Costs nothing functionally today: there is no
-dashboard/login flow for a human to exercise any of these four paths
-through yet anyway, so blocking changes no currently-working behavior.
+**Decided (2026-09-01, team-lead): option (a), block — narrowed
+2026-09-01 after reviewing the coder's implementation against the four
+call sites individually, not applied as one blanket rule.** "Block" applies
+specifically to actions that **exercise authority on behalf of the company
+or grant access/effect visible to another party**: approval decisions,
+comms-room registration, and heartbeat creation. For these three, any call
+where the resolved `OrgMember.kind === 'human'` and no valid
+`ActorCredential` is presented is refused outright —
+`ActorIdentityVerificationError`, no fallback to the weaker pre-existing
+check. Fail closed for humans specifically, not just a documented risk —
+matching the fail-closed discipline this domain has held throughout. Costs
+nothing functionally today: there is no dashboard/login flow for a human to
+exercise any of these three paths through yet anyway, so blocking changes
+no currently-working behavior.
+
+**Narrowed exception: self-referential-only actions.**
+`setInteractionProfileConsent` is exempt from "block." It is human-only by
+design (it hard-rejects any `target.kind !== 'human'` — agents don't have
+consent preferences) and strictly self-referential: the actor and the
+subject must already be the identical `orgMemberId`
+(`EMPLOYEE-INTERACTION-PROFILE.md` §3's `actor.id === orgMemberId`
+invariant), and no other party is ever affected by a false positive here —
+there is no "grant access to X on Y's behalf" shape to forge in the first
+place, unlike the other three sites. Applying "block" literally to this
+function would make the entire opt-in feature — the first Human Employee
+Augmentation slice, already approved — permanently, silently uncallable by
+anyone, forever: not fail-closed-but-eventually-fixable like the other
+three (which stay usable by agent actors even while humans are blocked on
+them), but a deletion of a shipped feature disguised as a security
+tightening. That is a bug in the original blanket decision, not a correct
+application of it. `setInteractionProfileConsent` therefore keeps its
+existing self-check (`actor.id === orgMemberId`) unchanged, **with the
+residual risk explicitly tracked, not silently accepted**: `actor.id`
+itself is unverified without real human authentication, so a caller could
+in principle still forge which human's consent is being set. This is the
+same category of pre-existing risk that existed before this entire
+identity-verification slice began — this slice does not make it worse, and
+narrowing "block" to exempt this one function does not reintroduce it
+either, since it was never closed for this function to begin with. It
+remains open until Phase 2's real human auth lands, same timeline as the
+other three, just without an interim block standing in its way for
+something that was never exploitable through a third party.
+
+**The general rule, restated precisely**: "block" targets *authority
+exercised on behalf of the company, or an effect visible to/actionable by
+someone other than the actor themselves* — approval decisions bind the
+company to a Company/Goal/Issue-level outcome, comms-room registration
+grants a durable access artifact, heartbeat creation schedules recurring
+company-resourced work. It does not target a person managing their own,
+already-self-scoped data with no other party's visibility or authority at
+stake. Any future actor-taking function should be classified against this
+same test before deciding whether "block" applies to it, rather than
+assuming blanket coverage.
 
 **Structural consequence, recorded so it isn't rediscovered as a surprise**:
 this makes real human authentication/login a **hard prerequisite for
@@ -235,7 +277,9 @@ Phase 2 (dashboard)**, not something to design later — `docs/PLAN.md`'s
 Phase 2 entry now states this explicitly. Phase 2's own design doc, when
 written, must solve human credential issuance as its first concern, the
 same way this document solved agent issuance via `claims_accept-handoff`
-succeeding.
+succeeding — closing the residual `setInteractionProfileConsent` risk
+above is one of the things that issuance work will finish, not a separate
+follow-up.
 
 ## 5. Retrofit — the four call sites
 
@@ -258,10 +302,15 @@ using the verified `orgMemberId` for anything else it needs:
    ActorCredential }`. The self-approval re-check against the *persisted*
    submit transition now compares verified identities on both sides, not
    one verified (status, already fixed) and one not (the id itself).
-3. **Comms-room registration / human-join minting**
-   (`comms/agentbbs-notification-channel.ts` and wherever it's called on
-   an OrgMember's behalf) — the caller must present a valid credential for
-   the OrgMember the room/token is being registered/minted for.
+3. **Comms-room registration / human-join minting** — **corrected after
+   implementation**: this design assumed a single retrofit point covering
+   both room registration and `mintHumanCommsAccess`
+   (`comms/agentbbs-notification-channel.ts`). The coder's own grep of
+   every real call site found `mintHumanCommsAccess` **never took an
+   `actor`/`OrgMember` parameter in the first place** — there is nothing
+   to retrofit here, and it was never part of the forgery surface this
+   document addresses. Left exactly as it was; no exception needed because
+   the premise (an unverified actor parameter) doesn't apply.
 4. **Heartbeat schedule create/pause/resume**
    (`authorization/claims-authorization.ts`'s `verifyActorHoldsClaim`
    reused by heartbeat persistence) — `verifyActorHoldsClaim` itself stays
@@ -269,27 +318,41 @@ using the verified `orgMemberId` for anything else it needs:
    `verifyActorCredential` call is added *before* it, so the full chain
    becomes "verify the caller really is this OrgMember, then verify that
    OrgMember holds the claim" instead of just the second half.
-5. **`EmployeeInteractionProfile` consent** (`employee-augmentation/interaction-profile.ts`) —
-   the most exposed site (bare equality check, no claims involvement at
-   all) becomes `setInteractionProfileConsent(companyId, orgMemberId,
-   signalTypes, credential: ActorCredential, config?)`, verifying the
-   credential resolves to `orgMemberId` itself (self-service invariant
-   preserved, now cryptographically, not just by object-equality
-   convention).
+5. **`EmployeeInteractionProfile` consent**
+   (`employee-augmentation/interaction-profile.ts`) — **NOT retrofitted,
+   deliberately, per the narrowed §4 exception.** Keeps its existing
+   signature (`setInteractionProfileConsent(companyId, orgMemberId,
+   signalTypes, actor: OrgMember, config?)`) and its existing
+   `actor.id === orgMemberId` self-check, unchanged. Strictly
+   self-referential with no other party ever affected — this design's
+   "block" rule doesn't reach it, and retrofitting it to require a
+   credential that can never be issued (§4's human-issuance gap) would
+   make the function permanently uncallable rather than fail-closed. The
+   `actor.id` forgery risk here stays open, tracked, until Phase 2's real
+   human auth lands — see §6.
 
 ## 6. What this closes vs. what remains open
 
 **Closes**: the specific bypass security found — forging a *different*
 `actor.id` than your own to approve/reject an issue you submitted, or to
-set consent/register comms/create heartbeats on someone else's behalf —
-for every `kind: 'agent'` OrgMember, immediately, chaining off the
-already-real `claims_accept-handoff` event.
+register comms/create heartbeats on someone else's behalf — for every
+`kind: 'agent'` OrgMember, immediately, chaining off the already-real
+`claims_accept-handoff` event. For `kind: 'human'` OrgMembers on these
+same three sites, the equivalent forgery is now blocked outright (§4) —
+not closed by verification (no issuance path exists yet), but refused
+rather than silently permitted.
 
 **Remains open, named not hidden**:
-- Human issuance (§4) — resolved as "block" (decided), but the actual
-  issuance mechanism itself is still unbuilt; blocking is a fail-closed
-  placeholder, not a solution. Real human credential issuance is now a
-  named prerequisite for Phase 2.
+- `setInteractionProfileConsent`'s `actor.id` forgery risk (§4's narrowed
+  exception, §5 item 5) — explicitly **not** addressed by this design for
+  either actor kind, since the function was never retrofitted with
+  credential verification at all. This is a pre-existing risk this slice
+  neither worsens nor closes, carried forward until Phase 2's human
+  issuance work closes it as part of finishing `ActorCredential` coverage.
+- Human issuance for the other three sites (§4) — resolved as "block"
+  (decided), but the actual issuance mechanism itself is still unbuilt;
+  blocking is a fail-closed placeholder, not a solution. Real human
+  credential issuance is now a named prerequisite for Phase 2.
 - `radio-moe` becomes a hard runtime dependency for this mechanism — worth
   confirming that's an acceptable posture given its "research-prototype"
   status (`ADR-0001` amendment 7a), separately from its already-accepted
@@ -317,19 +380,27 @@ Decision locked (§4) — ready to implement:
   agent-issuance path (§4), GCP Secret Manager key handling following the
   root `CLAUDE.md` discipline exactly (never log/persist the private
   key), `admittedIssuerKeys` resolution.
-- Retrofit the five signatures in §5, and their existing tests (every
-  `deps.approver`/`actor`-shaped test in `approval-gate.test.ts`,
-  `claims-authorization.test.ts`, `interaction-profile` tests needs a
-  credential fixture instead of a bare `OrgMember`).
+- Retrofit the four *credentialed* signatures in §5 (items 1-4 —
+  `applyApprovalTransition`, `persistIssue`'s Guard C, comms-room
+  registration, heartbeat create/pause/resume) and their existing tests
+  (every `deps.approver`/`actor`-shaped test in `approval-gate.test.ts`,
+  `claims-authorization.test.ts` needs a credential fixture instead of a
+  bare `OrgMember`). **`setInteractionProfileConsent` (§5 item 5) is
+  explicitly NOT retrofitted** — leave its signature and self-check as-is;
+  `interaction-profile` tests need no change for this reason.
 - New tests: a forged-`orgMemberId` credential is rejected (wrong
   signature), an expired credential is rejected, a replayed nonce is
   rejected, an unadmitted issuer key is rejected even with an internally
-  valid signature, a `kind: 'human'` `OrgMember` is refused on all four
-  call sites regardless of what's presented (the locked "block" decision,
-  §4 — no fallback path should exist in the code to fall back to), and —
-  the regression test that matters most — the exact scenario security
-  found (approve/reject with a credential for a *different* `orgMemberId`
-  than the one that submitted) is now blocked.
+  valid signature, a `kind: 'human'` `OrgMember` is refused on the three
+  authority/other-party-affecting call sites regardless of what's
+  presented (the locked, narrowed "block" decision, §4 — no fallback path
+  should exist in the code to fall back to), a confirming test that
+  `setInteractionProfileConsent` is *unaffected* by any of this (still
+  callable by a self-consenting human `OrgMember`, exactly as
+  `EMPLOYEE-INTERACTION-PROFILE.md` originally specified — the feature
+  must still work), and — the regression test that matters most — the
+  exact scenario security found (approve/reject with a credential for a
+  *different* `orgMemberId` than the one that submitted) is now blocked.
 - `docs/PLAN.md`'s Phase 2 entry now names real human authentication/login
   as a hard prerequisite (added alongside this design) — no code action
   needed for that here, just keeping it in mind that this slice is why
