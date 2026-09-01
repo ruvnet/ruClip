@@ -321,9 +321,9 @@ GCP cron — reuse verbatim.
      unauthorized rather than trusting the caller — matching how the
      self-approval re-check already treated its own input. 144 tests total
      (up from 142), `tsc --strict` clean.
-   - **Still remaining**: `claims_claim` is not wired into issue
-     creation/assignment (`AUTHORIZATION.md` §5 — the natural extension
-     point is the existing `assigned_to` causal-edge write in
+   - **Still remaining (superseded below)**: `claims_claim` is not wired
+     into issue creation/assignment (`AUTHORIZATION.md` §5 — the natural
+     extension point is the existing `assigned_to` causal-edge write in
      `persistIssue`, not built this slice); the real `claims_list`/
      `claims_board` response shape is verified only by reading
      `v3/@claude-flow/cli/src/mcp-tools/claims-tools.ts` in the ruflo
@@ -331,8 +331,87 @@ GCP cron — reuse verbatim.
      `claims_board` fallback path this repo's own tests exercise has never
      actually run against a real `ruflo mcp start -t http` process; the
      real `WitnessHook` implementation (ADR-103) is still unbuilt (Phase 1c
-     gap, unchanged); budget-gated heartbeats and `agentbbs` wiring remain
-     not started.
+     gap, unchanged).
+   - **Delivered this iteration** (Phase 1e,
+     `docs/design/HEARTBEATS-AND-COMMS.md` — closes both of Phase 1's
+     remaining items, budget-gated heartbeats and comms wiring): a new
+     `HeartbeatSchedule` entity (`schema/heartbeat-schedule.ts` — a
+     discriminated `goal | issue` target, `assertValidHeartbeatSchedule`)
+     and `NotificationChannel`/`NotificationEvent`/`NotificationKind` seam
+     (`schema/notification.ts`). `fireHeartbeat`
+     (`src/control-plane/heartbeat/fire-heartbeat.ts`) runs two AND'ed
+     gates before ever waking anyone — **Gate 1**, ruClip's own already-
+     shipped `Company.budget`/`Issue.budgetImpact`/`Goal.budgetAllocation`
+     accounting, and **Gate 2**, a new `checkOperatingBudget`/
+     `setOperatingBudget` pair in `store/agentdb-adapter.ts` mirroring
+     `ruflo-cost-tracker`'s alert-ladder shape but reading/writing ruClip's
+     **own** `ruclip-cost-tracking` namespace via the real `memory_store`/
+     `memory_retrieve`/`memory_list` MCP tools — either gate failing pauses
+     the schedule (fail closed) and publishes a `heartbeat-budget-blocked`
+     notification rather than silently skipping to retry next cycle. New
+     `heartbeatKey`/`persistHeartbeatSchedule`/`recallHeartbeatSchedule`/
+     `listDueHeartbeats` complete the adapter surface; creating/pausing/
+     resuming a schedule reuses `verifyActorHoldsClaim` directly (no new
+     authorization machinery). `AgentBbsNotificationChannel`
+     (`src/control-plane/comms/agentbbs-notification-channel.ts`) is a real
+     implementation over the live `federation_bbs_register`/`_publish`/
+     `_human_join` MCP tools; `AgentRadioNotificationChannel` is an
+     interface-only stub (`{delivered:false, degraded:true}` unconditionally
+     — see deviations below). `applyApprovalTransition` gained
+     `deps.notifications`, publishing `issue-approval-transition`
+     best-effort after a transition persists. 174 tests total (up from
+     144), `tsc --strict` clean.
+   - **Four grounding corrections from a literal reading of the original
+     brief, documented in `HEARTBEATS-AND-COMMS.md` §0 before
+     implementation** (same discipline that caught the Phase 1d
+     `claims_handoff` status bug): (A) `hooks_worker-dispatch`'s 12
+     triggers are a closed, repo-maintenance vocabulary — none fits "check
+     on an Issue," so heartbeats are not a worker-dispatch call. (B)
+     Neither `CronCreate` (real live schema: session-only, non-durable,
+     7-day auto-expire, contradicting `ruflo-loop-workers`' own skill doc)
+     nor `ScheduleWakeup` (not a real tool in this environment) is an
+     actually-durable scheduler — `HeartbeatSchedule.nextFireAt` in AgentDB
+     is the durable source of truth; an active session/cron job is only
+     ever the proximate trigger. (C) `ruflo-cost-tracker`'s "budget" is a
+     whole-*project* circuit breaker over real Claude session spend via CLI
+     script shell-outs (no MCP form), with no `companyId`/`issueId`
+     parameter at all — genuinely different from ruClip's own
+     `Company.budget`/`Issue.budgetImpact`; both stay as two separate,
+     AND'ed gates, not merged. (D) `agentbbs` has real, live
+     `federation_bbs_*` MCP tools; a repo-wide search for
+     `radio-moe`/`AgentRadio` finds no source and no matching MCP tools
+     anywhere in this environment, and `ruvnet/autogenous` is not checked
+     out on this machine — `AgentRadioNotificationChannel` is therefore an
+     honest stub and `agentbbs`, not AgentRadio, is the channel actually
+     wired this slice, a deviation from the brief's "AgentRadio primary"
+     framing made explicit rather than faked.
+   - **One further real deviation found only by reading the tool source,
+     not assumed from the design doc's own prose**: `memory_list`'s
+     confirmed live schema returns entry **metadata only**
+     (`{key, namespace, storedAt, updatedAt, accessCount, hasEmbedding,
+     size}`) — no `value`/`content` field at all. `checkOperatingBudget`
+     therefore cannot sum `total_cost_usd` from a single `memory_list` call
+     the way the design doc's prose reads — it lists `session-*` keys, then
+     issues one `memory_retrieve` per key to actually read each record.
+     This mirrors the exact same metadata-only limitation
+     `agentdb-tools.ts`'s own pattern-search fallback already works around
+     elsewhere in the ruflo monorepo (independently re-discovered here, not
+     copied). By contrast, `memory_store`'s `upsert: true` default *was*
+     confirmed correct as the design assumed — no timestamp-stamping
+     workaround needed for `setOperatingBudget`.
+   - **Still remaining**: the scheduler loop itself (whatever periodically
+     calls `listDueHeartbeats` + `fireHeartbeat`) is intentionally not
+     built this slice (`HEARTBEATS-AND-COMMS.md` §7 — a `/loop`-style
+     in-session pattern is the natural fit, cross-referenced but deferred,
+     same as `WitnessHook`'s real implementation was in Phase 1c);
+     `claims_claim` still not wired into issue creation/assignment;
+     `AgentRadioNotificationChannel` remains a stub pending a real
+     `ruvnet/autogenous`/`radio-moe` checkout to implement against; the
+     real `WitnessHook` implementation (ADR-103) is still unbuilt. This
+     closes out the last two items PLAN.md §8 Phase 1 originally listed —
+     Phase 1 (Control plane core) is now feature-complete against its
+     original scope, modulo the still-open items named throughout this
+     section.
 3. **Phase 2 — Dashboard**: Claude Artifact-based company board (capabilities:
    live state, multi-viewer, saved documents).
 4. **Phase 3 — ruclip-metaharness**: build-time bench suite, `score`/`genome`

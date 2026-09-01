@@ -6,4 +6,6 @@ export * from './issue.js';
 export * from './comment.js';
 export * from './approval-transition.js';
 export * from './witness.js';
+export * from './heartbeat-schedule.js';
+export * from './notification.js';
 export * from './validation.js';

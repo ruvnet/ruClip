@@ -15,6 +15,7 @@ import type { Goal } from './goal.js';
 import type { Issue } from './issue.js';
 import type { Comment } from './comment.js';
 import type { ApprovalAction, ApprovalTransition } from './approval-transition.js';
+import type { HeartbeatSchedule } from './heartbeat-schedule.js';
 import type {
   CompanyStatus,
   OrgMemberKind,
@@ -38,6 +39,13 @@ const GOAL_STATUSES: readonly GoalStatus[] = ['proposed', 'active', 'achieved', 
 const ISSUE_STATUSES: readonly IssueStatus[] = ['open', 'in_progress', 'blocked', 'done', 'cancelled'];
 const APPROVAL_STATES: readonly ApprovalState[] = ['draft', 'pending', 'approved', 'rejected'];
 const APPROVAL_ACTIONS: readonly ApprovalAction[] = ['submit', 'approve', 'reject', 'revise'];
+const HEARTBEAT_STATUSES: readonly HeartbeatSchedule['status'][] = ['active', 'paused', 'cancelled'];
+const HEARTBEAT_OUTCOMES: readonly NonNullable<HeartbeatSchedule['lastOutcome']>[] = [
+  'ok',
+  'application_budget_blocked',
+  'operating_budget_blocked',
+  'error',
+];
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
@@ -262,4 +270,47 @@ export function assertValidApprovalTransition(transition: ApprovalTransition): v
   if (transition.witnessRef !== null && !isNonEmptyString(transition.witnessRef)) {
     throw new SchemaValidationError(entity, 'witnessRef must be a non-empty string or null');
   }
+}
+
+/**
+ * Structural checks only (safe-id fields, discriminated-union target shape,
+ * enum membership, the cadenceSeconds floor) — no access to prior state.
+ * Whether target.issueId's goalId actually matches the stored Issue's
+ * goalId needs a recall and lives in persistHeartbeatSchedule
+ * (store/agentdb-adapter.ts), same boundary split as every other
+ * assertValid* in this file (HEARTBEATS-AND-COMMS.md §1).
+ */
+export function assertValidHeartbeatSchedule(schedule: HeartbeatSchedule): void {
+  const entity = 'HeartbeatSchedule';
+  if (!isSafeId(schedule.id)) throw new SchemaValidationError(entity, 'id must be a safe non-empty id string');
+  if (!isSafeId(schedule.companyId)) {
+    throw new SchemaValidationError(entity, 'companyId must be a safe non-empty id string');
+  }
+  if (schedule.target.kind !== 'goal' && schedule.target.kind !== 'issue') {
+    throw new SchemaValidationError(entity, "target.kind must be 'goal' or 'issue'");
+  }
+  if (!isSafeId(schedule.target.goalId)) {
+    throw new SchemaValidationError(entity, 'target.goalId must be a safe non-empty id string');
+  }
+  if (schedule.target.kind === 'issue' && !isSafeId(schedule.target.issueId)) {
+    throw new SchemaValidationError(entity, 'target.issueId must be a safe non-empty id string');
+  }
+  if (!isSafeId(schedule.assigneeId)) {
+    throw new SchemaValidationError(entity, 'assigneeId must be a safe non-empty id string');
+  }
+  if (typeof schedule.cadenceSeconds !== 'number' || schedule.cadenceSeconds < 60) {
+    throw new SchemaValidationError(entity, 'cadenceSeconds must be a number >= 60');
+  }
+  if (!HEARTBEAT_STATUSES.includes(schedule.status)) {
+    throw new SchemaValidationError(entity, `status must be one of ${HEARTBEAT_STATUSES.join(', ')}`);
+  }
+  if (!isIsoDate(schedule.nextFireAt)) throw new SchemaValidationError(entity, 'nextFireAt must be ISO 8601');
+  if (schedule.lastFiredAt !== null && !isIsoDate(schedule.lastFiredAt)) {
+    throw new SchemaValidationError(entity, 'lastFiredAt must be ISO 8601 or null');
+  }
+  if (schedule.lastOutcome !== null && !HEARTBEAT_OUTCOMES.includes(schedule.lastOutcome)) {
+    throw new SchemaValidationError(entity, `lastOutcome must be one of ${HEARTBEAT_OUTCOMES.join(', ')} or null`);
+  }
+  if (!isIsoDate(schedule.createdAt)) throw new SchemaValidationError(entity, 'createdAt must be ISO 8601');
+  if (!isIsoDate(schedule.updatedAt)) throw new SchemaValidationError(entity, 'updatedAt must be ISO 8601');
 }
