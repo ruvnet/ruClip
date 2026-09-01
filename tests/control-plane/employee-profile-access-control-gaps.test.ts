@@ -10,27 +10,35 @@
  * recallInteractionProfileForComposition) — all of which I verified pass —
  * rather than re-testing that ground.
  *
- * FINDING 1 (test 1 below), most severe: docs/design/EMPLOYEE-INTERACTION-PROFILE.md
- * §2 states "Two read paths are designed, and no others exist" and frames
- * that as "the actual guarantee" — specifically that a future manager-facing
- * feature "cannot 'unlock' by relaxing a parameter on these two, because
- * these two never had the parameter that would need relaxing." That
- * guarantee is false today: store/agentdb-adapter.ts's
- * `recallInteractionProfile(companyId, orgMemberId, config)` — the shared
- * low-level primitive both "gated" functions call internally — is itself a
- * public export with NO actor/requester parameter of any kind, gated or
- * otherwise. Nothing stops ANY code that imports store/agentdb-adapter.ts
- * (which is most of this codebase, and any external consumer of this
- * package) from calling it directly with an arbitrary orgMemberId and
+ * FINDING 1 (test 1 below), most severe, FIXED (security review round 6):
+ * docs/design/EMPLOYEE-INTERACTION-PROFILE.md §2 states "Two read paths are
+ * designed, and no others exist" and frames that as "the actual guarantee"
+ * — specifically that a future manager-facing feature "cannot 'unlock' by
+ * relaxing a parameter on these two, because these two never had the
+ * parameter that would need relaxing." That guarantee was false as shipped:
+ * store/agentdb-adapter.ts's `recallInteractionProfile(companyId,
+ * orgMemberId, config)` — the shared low-level primitive both "gated"
+ * functions call internally — was itself a public export with NO
+ * actor/requester parameter of any kind, gated or otherwise. Nothing
+ * stopped ANY code that imported store/agentdb-adapter.ts (which is most of
+ * this codebase) from calling it directly with an arbitrary orgMemberId and
  * getting back that person's full profile — no self-check, no composition
- * context, no access control whatsoever. This isn't a forgeable-parameter
- * bug like the ones prior slices found; it's a THIRD, completely open read
- * path that the design's own "no others exist" claim says shouldn't exist.
- * The employee-augmentation/interaction-profile.ts module's own comment on
- * this export even says "NOT exported for general use as a 'read anyone's
- * profile' function in disguise" — but exporting it from a module every
- * other file in the codebase already imports from IS exactly that, in
- * effect, regardless of the comment's intent.
+ * context, no access control whatsoever. This wasn't a forgeable-parameter
+ * bug like the ones prior slices found; it was a THIRD, completely open
+ * read path that the design's own "no others exist" claim said shouldn't
+ * exist. The module's own comment on the export even said "NOT exported
+ * for general use as a 'read anyone's profile' function in disguise" — but
+ * `export` has no such restriction; a symbol exported from a module every
+ * other file already imports from IS general-use regardless of the
+ * comment's intent. Fixed by moving `interactionProfileKey`/
+ * `persistInteractionProfile`/`recallInteractionProfile` out of
+ * store/agentdb-adapter.ts entirely and into
+ * employee-augmentation/interaction-profile.ts (their only legitimate
+ * caller) as module-private (non-exported) functions — the unsafe shape no
+ * longer exists to be misused, matching the design's own "access control by
+ * function shape" philosophy. Test 1 now proves the old import path is
+ * gone; test 2 proves the two designed read paths still return correct,
+ * identical data.
  *
  * FINDING 2 (test 2 below), narrower but real: `setInteractionProfileConsent`'s
  * entire "self-service only" guarantee rests on comparing `actor.id` to
@@ -52,7 +60,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mockBridge } from '../support/mock-bridge.js';
-import { recallInteractionProfile } from '../../src/control-plane/store/agentdb-adapter.js';
+import * as agentDbAdapter from '../../src/control-plane/store/agentdb-adapter.js';
 import {
   recallOwnInteractionProfile,
   recallInteractionProfileForComposition,
@@ -98,33 +106,23 @@ const orgMemberRecallKey = (companyId: string, orgMemberId: string) => `ruclip:c
 // --- Finding 1: recallInteractionProfile is an unrestricted third read path ---
 
 test(
-  'FINDING: recallInteractionProfile (store/agentdb-adapter.ts, exported) reads ANY human OrgMember\'s ' +
-    'profile with no actor/requester parameter at all — bypassing BOTH access-controlled read paths ' +
-    'EMPLOYEE-INTERACTION-PROFILE.md §2 says are the only two that exist',
-  async () => {
-    const victimProfile = baseProfile();
-    const { config } = mockBridge({
-      'memory_retrieve': (args) =>
-        args.key === profileKey('co-1', 'victim-om')
-          ? { found: true, value: victimProfile }
-          : { found: false },
-    });
-
-    // No actor object constructed, forged, or otherwise involved at all —
-    // this is not even the actor-forgery shape, it's simpler: the function
-    // itself has nothing to check.
-    const leaked = await recallInteractionProfile('co-1', 'victim-om', config);
-
-    assert.ok(leaked, 'expected the profile to be readable with zero access control');
-    assert.equal(leaked!.orgMemberId, 'victim-om');
-    assert.equal(leaked!.medianDecisionLatencySeconds, 3600);
-    assert.equal(leaked!.sampleCount, 12);
+  'FIXED: store/agentdb-adapter.ts no longer exports recallInteractionProfile (or persistInteractionProfile/ ' +
+    'interactionProfileKey) at all — the unrestricted third read path is gone, not just discouraged by comment',
+  () => {
+    const adapterExports = agentDbAdapter as unknown as Record<string, unknown>;
+    assert.equal(
+      'recallInteractionProfile' in adapterExports,
+      false,
+      'recallInteractionProfile must not be reachable from store/agentdb-adapter.ts at all',
+    );
+    assert.equal('persistInteractionProfile' in adapterExports, false);
+    assert.equal('interactionProfileKey' in adapterExports, false);
   },
 );
 
 test(
-  'the two "gated" read functions and the ungated primitive return identical data for the same profile — ' +
-    'confirming the primitive is not some reduced/redacted view, it is the exact same read',
+  'the two designed read paths still return correct, identical data for the same profile after the fix ' +
+    '(the move to module-private primitives did not change observable behavior)',
   async () => {
     const victim = baseOrgMember({ id: 'victim-om' });
     const victimProfile = baseProfile();
@@ -135,11 +133,9 @@ test(
 
     const viaSelfRead = await recallOwnInteractionProfile(victim, config);
     const viaComposition = await recallInteractionProfileForComposition('co-1', 'victim-om', config);
-    const viaRawPrimitive = await recallInteractionProfile('co-1', 'victim-om', config);
 
     assert.deepEqual(viaSelfRead, victimProfile);
     assert.deepEqual(viaComposition, victimProfile);
-    assert.deepEqual(viaRawPrimitive, victimProfile);
   },
 );
 

@@ -62,7 +62,6 @@ import type { ApprovalAction, ApprovalTransition } from '../schema/approval-tran
 import type { WitnessHook } from '../schema/witness.js';
 import type { HeartbeatSchedule, HeartbeatStatus, HeartbeatTarget } from '../schema/heartbeat-schedule.js';
 import type { NotificationChannel } from '../schema/notification.js';
-import type { EmployeeInteractionProfile } from '../schema/employee-interaction-profile.js';
 import type { CausalRelation, MemoryTier } from '../schema/enums.js';
 import {
   assertValidCompany,
@@ -72,7 +71,6 @@ import {
   assertValidComment,
   assertValidApprovalTransition,
   assertValidHeartbeatSchedule,
-  assertValidEmployeeInteractionProfile,
 } from '../schema/validation.js';
 import { transitionApprovalState, isLegalApprovalTransition } from '../approval/transition-approval-state.js';
 import {
@@ -587,9 +585,8 @@ export async function recallApprovalTransition(
  * SAME issueId, which may belong to a different actor — so a query scoped
  * to one actor alone isn't sufficient; the pairing needs the whole
  * per-issue transition history. Not named in the design doc's own file
- * list (only `interactionProfileKey`/`persistInteractionProfile`/
- * `recallInteractionProfile` are) — added because no existing primitive
- * supports "list all transitions," matching the exact "list broadly,
+ * list — added because no existing primitive supports "list all
+ * transitions," matching the exact "list broadly,
  * filter client-side" pattern `listDueHeartbeats` already establishes for
  * the same reason (`agentdb_hierarchical-recall` is semantic search, not a
  * structured filter). Not exhaustive at large scale (topK caps results per
@@ -1049,71 +1046,6 @@ export async function checkOperatingBudget(
 
   const utilizationPct = budgetConfig.budgetUsd > 0 ? totalCostUsd / budgetConfig.budgetUsd : 0;
   return { level: operatingBudgetLevel(utilizationPct, budgetConfig.thresholds), utilizationPct };
-}
-
-// --- EmployeeInteractionProfile (EMPLOYEE-INTERACTION-PROFILE.md §5) --------
-
-/**
- * Deliberately separate from both `RUCLIP_COST_NAMESPACE` (operational
- * infra spend) and the `ruclip:company:...` AgentDB hierarchical-store
- * keys (domain entities) — this is a distinct, more-sensitive category of
- * data with its own access-control story
- * (employee-augmentation/interaction-profile.ts), so a future
- * "delete everything in this namespace" GDPR-style erasure operation is
- * possible without touching unrelated data.
- */
-const RUCLIP_EMPLOYEE_PROFILES_NAMESPACE = 'ruclip-employee-profiles';
-
-export function interactionProfileKey(companyId: string, orgMemberId: string): string {
-  assertSafeId(companyId, 'companyId');
-  assertSafeId(orgMemberId, 'orgMemberId');
-  return `ruclip:company:${companyId}:org-member:${orgMemberId}:interaction-profile`;
-}
-
-/** Low-level store primitive — memory_store, provenance_type: 'system_observation' (ADR-323), upsert: true (confirmed real default, see checkOperatingBudget's finding). */
-export async function persistInteractionProfile(
-  profile: EmployeeInteractionProfile,
-  config?: AgentDbAdapterConfig,
-): Promise<void> {
-  assertValidEmployeeInteractionProfile(profile);
-  await callTool(
-    'memory_store',
-    {
-      key: interactionProfileKey(profile.companyId, profile.orgMemberId),
-      value: JSON.stringify(profile),
-      namespace: RUCLIP_EMPLOYEE_PROFILES_NAMESPACE,
-      upsert: true,
-      provenance_type: 'system_observation',
-    },
-    config,
-  );
-}
-
-/**
- * Low-level recall primitive — exact (companyId, orgMemberId) key via
- * memory_retrieve. NOT exported for general use as a "read anyone's
- * profile" function in disguise: this takes the same two structural
- * parameters `interactionProfileKey` does (the key components), not an
- * `actor`/requester — callers needing access control go through
- * `recallOwnInteractionProfile`/`recallInteractionProfileForComposition`
- * in employee-augmentation/interaction-profile.ts (EMPLOYEE-INTERACTION-PROFILE.md
- * §2), which both call this. It IS exported (unlike the analogous
- * `storeAtTier`/`recallByKey`) because `recomputeInteractionSignals` in
- * that same module needs it directly, per the design's own §4 step 1 note
- * ("no actor check needed here, this is system-internal recomputation").
- */
-export async function recallInteractionProfile(
-  companyId: string,
-  orgMemberId: string,
-  config?: AgentDbAdapterConfig,
-): Promise<EmployeeInteractionProfile | null> {
-  const result = await callTool<{ found?: boolean; value?: unknown }>(
-    'memory_retrieve',
-    { key: interactionProfileKey(companyId, orgMemberId), namespace: RUCLIP_EMPLOYEE_PROFILES_NAMESPACE },
-    config,
-  );
-  if (!result.found || typeof result.value !== 'object' || result.value === null) return null;
-  return result.value as EmployeeInteractionProfile;
 }
 
 // --- Pattern-store (DOMAIN-MODEL.md §2.4) -----------------------------------

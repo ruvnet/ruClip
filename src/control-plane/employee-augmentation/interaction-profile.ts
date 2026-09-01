@@ -37,19 +37,84 @@ import type {
   EmployeeInteractionProfile,
   InteractionSignalType,
 } from '../schema/employee-interaction-profile.js';
-import { AgentDbBridgeError, type AgentDbAdapterConfig } from '../store/bridge-client.js';
-import {
-  persistInteractionProfile,
-  recallInteractionProfile,
-  recallOrgMember,
-  listApprovalTransitionsForCompany,
-} from '../store/agentdb-adapter.js';
+import { assertValidEmployeeInteractionProfile } from '../schema/validation.js';
+import { AgentDbBridgeError, callTool, assertSafeId, type AgentDbAdapterConfig } from '../store/bridge-client.js';
+import { recallOrgMember, listApprovalTransitionsForCompany } from '../store/agentdb-adapter.js';
 
 export class PrivacyConsentError extends AgentDbBridgeError {
   constructor(message: string) {
     super(message);
     this.name = 'PrivacyConsentError';
   }
+}
+
+// --- Storage primitives (EMPLOYEE-INTERACTION-PROFILE.md §5) -------------
+//
+// Security-hardening correction (security review round 6): these three
+// primitives originally lived in store/agentdb-adapter.ts, EXPORTED, per
+// the design doc's own §6 file list. That made `recallInteractionProfile`
+// a third, completely unrestricted read path — callable by any code that
+// imports agentdb-adapter.ts (most of this codebase) with just an
+// orgMemberId, no actor/requester parameter of any kind — directly
+// contradicting §2's "no others exist" guarantee, confirmed exploitable by
+// an independent test. The design's own comment on the export even said
+// "NOT exported for general use as a 'read anyone's profile' function in
+// disguise," but `export` in a JS/TS module has no such restriction — a
+// symbol exported from a module every other file already imports from IS
+// general-use, regardless of the comment's intent. Moving these three
+// primitives here (their only legitimate caller) and keeping them
+// module-private closes the gap the same way the design's own philosophy
+// requires elsewhere: "access control... enforced by what parameters
+// exist... not by a runtime check on values" — here, by what's
+// *importable* at all, not by a comment asking callers not to.
+
+/** Deliberately separate from operational-infra/domain-entity namespaces — see EMPLOYEE-INTERACTION-PROFILE.md §5. */
+const RUCLIP_EMPLOYEE_PROFILES_NAMESPACE = 'ruclip-employee-profiles';
+
+function interactionProfileKey(companyId: string, orgMemberId: string): string {
+  assertSafeId(companyId, 'companyId');
+  assertSafeId(orgMemberId, 'orgMemberId');
+  return `ruclip:company:${companyId}:org-member:${orgMemberId}:interaction-profile`;
+}
+
+/** Low-level store primitive — memory_store, provenance_type: 'system_observation' (ADR-323), upsert: true. Module-private — see file header. */
+async function persistInteractionProfile(
+  profile: EmployeeInteractionProfile,
+  config?: AgentDbAdapterConfig,
+): Promise<void> {
+  assertValidEmployeeInteractionProfile(profile);
+  await callTool(
+    'memory_store',
+    {
+      key: interactionProfileKey(profile.companyId, profile.orgMemberId),
+      value: JSON.stringify(profile),
+      namespace: RUCLIP_EMPLOYEE_PROFILES_NAMESPACE,
+      upsert: true,
+      provenance_type: 'system_observation',
+    },
+    config,
+  );
+}
+
+/**
+ * Low-level recall primitive — exact (companyId, orgMemberId) key via
+ * memory_retrieve. Module-private (see file header) — every caller in this
+ * module goes through `recallOwnInteractionProfile`/
+ * `recallInteractionProfileForComposition`/`recomputeInteractionSignals`,
+ * which are the only functions this file exports for reading a profile.
+ */
+async function recallInteractionProfile(
+  companyId: string,
+  orgMemberId: string,
+  config?: AgentDbAdapterConfig,
+): Promise<EmployeeInteractionProfile | null> {
+  const result = await callTool<{ found?: boolean; value?: unknown }>(
+    'memory_retrieve',
+    { key: interactionProfileKey(companyId, orgMemberId), namespace: RUCLIP_EMPLOYEE_PROFILES_NAMESPACE },
+    config,
+  );
+  if (!result.found || typeof result.value !== 'object' || result.value === null) return null;
+  return result.value as EmployeeInteractionProfile;
 }
 
 // --- §2: the two, and only two, read paths ------------------------------
