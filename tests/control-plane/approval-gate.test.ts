@@ -13,6 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mockBridge } from '../support/mock-bridge.js';
+import { credentialFor, nonceMockHandlers } from '../support/actor-credential-fixture.js';
 import {
   persistIssue,
   applyApprovalTransition,
@@ -379,9 +380,18 @@ test('applyApprovalTransition (submit, no witness): persists the transition, upd
     'agentdb_causal-edge': () => ({ success: true }),
     'claims_handoff': () => ({ success: true }),
     'claims_list': activeClaimFor(actor, 'issue-1'),
+    ...nonceMockHandlers(),
   });
 
-  const result = await applyApprovalTransition('co-1', original, 'submit', actor, null, { approver }, config);
+  const result = await applyApprovalTransition(
+    'co-1',
+    original,
+    'submit',
+    await credentialFor(actor),
+    null,
+    { approver },
+    config,
+  );
 
   assert.equal(result.issue.approvalState, 'pending');
   assert.equal(result.issue.approvalTransitionRef, result.transition.id);
@@ -421,6 +431,7 @@ test('applyApprovalTransition (approve, with witness): wires the witness ref int
     'agentdb_causal-edge': () => ({ success: true }),
     'claims_accept-handoff': () => ({ success: true }),
     'claims_list': activeClaimFor(approver, 'issue-1'),
+    ...nonceMockHandlers(),
   });
   const witnessCalls: WitnessEntryInput[] = [];
   const witness: WitnessHook = {
@@ -430,7 +441,15 @@ test('applyApprovalTransition (approve, with witness): wires the witness ref int
     },
   };
 
-  const result = await applyApprovalTransition('co-1', pendingIssue, 'approve', approver, submit, { witness }, config);
+  const result = await applyApprovalTransition(
+    'co-1',
+    pendingIssue,
+    'approve',
+    await credentialFor(approver),
+    submit,
+    { witness },
+    config,
+  );
 
   assert.equal(result.issue.approvalState, 'approved');
   assert.equal(result.transition.witnessRef, 'witness-ref-abc');
@@ -478,13 +497,14 @@ test('applyApprovalTransition (reject): records a rejected_by edge, not approved
     'claims_accept-handoff': () => ({ success: true }),
     'claims_list': activeClaimFor(approver, 'issue-1'),
     'claims_handoff': () => ({ success: true }),
+    ...nonceMockHandlers(),
   });
 
   await applyApprovalTransition(
     'co-1',
     pendingIssue,
     'reject',
-    approver,
+    await credentialFor(approver),
     submit,
     { reason: 'too expensive', handoffTo: submitter },
     config,
@@ -514,10 +534,12 @@ test('applyApprovalTransition (reject) throws when deps.handoffTo is missing, af
     'agentdb_causal-edge': () => ({ success: true }),
     'claims_accept-handoff': () => ({ success: true }),
     'claims_list': activeClaimFor(approver, 'issue-1'),
+    ...nonceMockHandlers(),
   });
 
+  const authorization = await credentialFor(approver);
   await assert.rejects(
-    () => applyApprovalTransition('co-1', pendingIssue, 'reject', approver, submit, { reason: 'too expensive' }, config),
+    () => applyApprovalTransition('co-1', pendingIssue, 'reject', authorization, submit, { reason: 'too expensive' }, config),
     ClaimAuthorizationError,
   );
 
@@ -537,16 +559,27 @@ test(
     const pendingIssue = baseIssue({ approvalState: 'pending', approvalTransitionRef: 'transition-submit' });
     const sameActor = baseActor({ id: 'om-submitter' });
     const { calls, config } = mockBridge({
+      'agentdb_hierarchical-recall': recallReturning(null, sameActor),
       'claims_accept-handoff': () => ({ success: true }),
+      ...nonceMockHandlers(),
     });
 
-    await assert.rejects(() => applyApprovalTransition('co-1', pendingIssue, 'approve', sameActor, submit, {}, config));
+    const authorization = await credentialFor(sameActor);
+    await assert.rejects(
+      () => applyApprovalTransition('co-1', pendingIssue, 'approve', authorization, submit, {}, config),
+    );
 
-    // Unlike the pre-authorization design, one bridge call (the accept-handoff)
-    // now happens before the pure state machine gets a chance to reject —
-    // AUTHORIZATION.md §8 puts claims choreography ahead of
+    // Unlike the pre-authorization design, credential verification (nonce
+    // check/consume + recallOrgMember) now happens before claims_accept-handoff,
+    // which itself still runs before the pure state machine gets a chance to
+    // reject — AUTHORIZATION.md §8 puts claims choreography ahead of
     // transitionApprovalState. What must still hold is that nothing past that
     // point runs: no ApprovalTransition/Issue write, no causal edge.
-    assert.deepEqual(calls.map((c) => c.toolName), ['claims_accept-handoff']);
+    assert.deepEqual(calls.map((c) => c.toolName), [
+      'memory_retrieve',
+      'memory_store',
+      'agentdb_hierarchical-recall',
+      'claims_accept-handoff',
+    ]);
   },
 );

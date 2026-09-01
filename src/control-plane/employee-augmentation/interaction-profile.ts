@@ -161,6 +161,27 @@ function emptyProfile(companyId: string, orgMemberId: string, now: string): Empl
   };
 }
 
+/**
+ * NOT retrofitted to ActorCredential despite ACTOR-IDENTITY-VERIFICATION.md
+ * §5 item 5 naming this function — found while implementing, flagged back
+ * rather than silently applied or silently skipped. This function's own
+ * kind !== 'human' rejection below means EmployeeInteractionProfile consent
+ * applies ONLY to human OrgMembers, by design (EMPLOYEE-INTERACTION-PROFILE.md
+ * §3). ACTOR-IDENTITY-VERIFICATION.md §4's locked decision blocks EVERY
+ * `kind: 'human'` OrgMember from ever resolving a valid ActorCredential (no
+ * human issuance path exists). Gating this function behind
+ * `resolveVerifiedActor` would therefore make it permanently uncallable —
+ * no human could ever set their own consent again, a direct regression of
+ * already-shipped, already-tested functionality (Phase 6a), not a security
+ * fix. Left as the pre-existing self-service `actor.id === orgMemberId`
+ * check (already independently hardened — see this file's own history and
+ * the access-control-gaps test file) until either real human credential
+ * issuance ships (ACTOR-IDENTITY-VERIFICATION.md §4/Phase 2) or the
+ * human-block decision is revisited to scope per-call-site rather than
+ * blanket. See docs/PLAN.md §8 for the same finding recorded against
+ * `mintHumanCommsAccess` (comms/agentbbs-notification-channel.ts) — the
+ * root cause is identical in both places.
+ */
 export async function setInteractionProfileConsent(
   companyId: string,
   orgMemberId: string,

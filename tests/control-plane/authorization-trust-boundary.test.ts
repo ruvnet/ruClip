@@ -52,6 +52,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mockBridge } from '../support/mock-bridge.js';
+import { credentialFor, nonceMockHandlers } from '../support/actor-credential-fixture.js';
 import {
   persistIssue,
   persistOrgMember,
@@ -246,6 +247,7 @@ test(
         const claimant = type === 'human' ? { type, userId: id, name: label } : { type, agentId: id, agentType: label };
         return { success: true, claims: [{ issueId: 'issue-1', claimant, status: claim.status }] };
       },
+      ...nonceMockHandlers(),
     });
 
     const selfDealer = baseActor({ id: 'om-self-dealer' });
@@ -265,7 +267,7 @@ test(
       'co-1',
       draft,
       'submit',
-      selfDealer,
+      await credentialFor(selfDealer),
       null,
       { approver: selfDealer },
       config,
@@ -273,9 +275,18 @@ test(
     assert.equal(submitResult.issue.approvalState, 'pending');
 
     // Now attempts to approve as the same actor who just submitted.
+    const approveAuthorization = await credentialFor(selfDealer);
     await assert.rejects(
       () =>
-        applyApprovalTransition('co-1', submitResult.issue, 'approve', selfDealer, submitResult.transition, {}, config),
+        applyApprovalTransition(
+          'co-1',
+          submitResult.issue,
+          'approve',
+          approveAuthorization,
+          submitResult.transition,
+          {},
+          config,
+        ),
       IllegalApprovalTransitionError,
     );
 

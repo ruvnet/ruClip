@@ -79,6 +79,7 @@ import {
   acceptClaimHandoff,
   ClaimAuthorizationError,
 } from '../authorization/claims-authorization.js';
+import { resolveVerifiedActor, type ActorAuthorization } from '../authorization/actor-credential.js';
 import { recomputeInteractionSignals } from '../employee-augmentation/interaction-profile.js';
 import { AgentDbBridgeError, callTool, assertSafeId, type AgentDbAdapterConfig } from './bridge-client.js';
 
@@ -408,18 +409,35 @@ function checkBudgetImpactFrozenGuard(issue: Issue, stored: Issue | null): void 
 }
 
 /**
- * Guard C (AUTHORIZATION.md §6): closes the actor-forgery vector Guard A
- * leaves open — Guard A validates an ApprovalTransition's shape but not
- * whether the actorId inside it is genuine. No-op when approvalTransition
- * is undefined (no approval-state change this write, nothing to
- * authorize). Otherwise requires `authorization`, checks the supplied actor
- * matches the transition, re-verifies status: 'active' against the
- * PERSISTED OrgMember record (never the caller-supplied `authorization.actor`
- * object — recalled via recallOrgMember; a missing record is treated as
+ * Guard C (AUTHORIZATION.md §6, hardened further by
+ * ACTOR-IDENTITY-VERIFICATION.md §5 item 2): closes the actor-forgery
+ * vector Guard A leaves open — Guard A validates an ApprovalTransition's
+ * shape but not whether the actorId inside it is genuine. No-op when
+ * approvalTransition is undefined (no approval-state change this write,
+ * nothing to authorize). Otherwise requires `authorization`, checks the
+ * resolved actor matches the transition, re-verifies status: 'active'
+ * against the PERSISTED OrgMember record (never a caller-supplied object —
+ * recalled via recallOrgMember; a missing record is treated as
  * unauthorized, not as "trust the caller"), re-verifies the self-approval
  * invariant against the PERSISTED submit transition (never a
  * caller-supplied object — recalled via recallApprovalTransition), then
  * calls verifyActorHoldsClaim as the unforgeable external check.
+ *
+ * `authorization` accepts EITHER shape:
+ * - `{ credential, admittedIssuerKeys }` — a raw ActorCredential, verified
+ *   fresh right here via `resolveVerifiedActor` (consumes the credential's
+ *   nonce). This is what a caller invoking persistIssue directly/standalone
+ *   presents.
+ * - `{ actor }` — an ALREADY-VERIFIED OrgMember, freshly recalled by
+ *   another caller that already paid the `resolveVerifiedActor` cost. This
+ *   is what `applyApprovalTransition` (persistIssue's only real production
+ *   caller) passes — see that function's own header comment for why: its
+ *   own `resolveVerifiedActor` call already consumed the credential's
+ *   nonce (single-use, §3), so Guard C re-verifying the SAME raw credential
+ *   a second time would hit the replay guard and fail every legitimate
+ *   approve/reject/submit. `docs/PLAN.md` §8 records this as the one
+ *   necessary deviation from a literal reading of the design's §5 items
+ *   1-2, which (read literally) would double-consume a single-use nonce.
  *
  * Security-hardening correction to AUTHORIZATION.md §6's original text
  * ("`authorization.actor.status === 'active'` — re-verified here
@@ -439,17 +457,17 @@ async function checkAuthorizationGuard(
   issue: Issue,
   stored: Issue | null,
   approvalTransition: ApprovalTransition | undefined,
-  authorization: { actor: OrgMember } | undefined,
+  authorization: { actor: OrgMember } | ActorAuthorization | undefined,
   config?: AgentDbAdapterConfig,
 ): Promise<void> {
   if (approvalTransition === undefined) return;
 
   if (!authorization) {
     throw new ApprovalGateViolationError(
-      `Issue '${issue.id}' approvalState change requires authorization.actor to be supplied`,
+      `Issue '${issue.id}' approvalState change requires authorization to be supplied`,
     );
   }
-  const { actor } = authorization;
+  const actor = 'credential' in authorization ? await resolveVerifiedActor(authorization, config) : authorization.actor;
   if (actor.id !== approvalTransition.actorId) {
     throw new ApprovalGateViolationError(
       `authorization.actor.id '${actor.id}' does not match approvalTransition.actorId '${approvalTransition.actorId}'`,
@@ -510,7 +528,7 @@ export async function persistIssue(
   issue: Issue,
   previousStatus?: Issue['status'],
   approvalTransition?: ApprovalTransition,
-  authorization?: { actor: OrgMember },
+  authorization?: { actor: OrgMember } | ActorAuthorization,
   config?: AgentDbAdapterConfig,
 ): Promise<void> {
   assertValidIssue(issue);
@@ -631,12 +649,29 @@ export async function listApprovalTransitionsForCompany(
  * through the hardened persistIssue (which re-validates via Guards A/B/C).
  * `deps.witness` is optional — when omitted, `transition.witnessRef` stays
  * null (a tracked gap, see schema/witness.ts and APPROVAL-GATE.md §5).
+ *
+ * ACTOR-IDENTITY-VERIFICATION.md §5 item 1: `actor: OrgMember` is now
+ * `authorization: ActorAuthorization` — every action, including 'submit',
+ * requires a pre-existing, cryptographically verified `ActorCredential`
+ * rather than a caller-self-asserted `OrgMember` object. `resolveVerifiedActor`
+ * is called exactly ONCE, here, at the very top, before any side effect —
+ * both because a credential's nonce is single-use (§3 — verifying twice
+ * would fail the second time) and because it must gate every consequential
+ * action (claims_* mutations included), not just the final persist step.
+ * The resolved `actor` is threaded through the rest of this function
+ * exactly as the caller-supplied `actor` object was before, INCLUDING into
+ * `persistIssue`'s Guard C as `{ actor }` (an already-verified OrgMember),
+ * not as a second `{ credential, admittedIssuerKeys }` — passing the raw
+ * credential again would re-verify (and re-consume) the same nonce and
+ * fail every legitimate call. `docs/PLAN.md` §8 records this as a
+ * necessary deviation from a literal reading of the design's §5 items 1-2,
+ * found while implementing, not decided silently.
  */
 export async function applyApprovalTransition(
   companyId: string,
   issue: Issue,
   action: ApprovalAction,
-  actor: OrgMember,
+  authorization: ActorAuthorization,
   previousTransition: ApprovalTransition | null,
   deps: {
     witness?: WitnessHook;
@@ -648,6 +683,13 @@ export async function applyApprovalTransition(
   },
   config?: AgentDbAdapterConfig,
 ): Promise<{ issue: Issue; transition: ApprovalTransition }> {
+  const actor = await resolveVerifiedActor(authorization, config);
+  if (actor.companyId !== companyId) {
+    throw new ClaimAuthorizationError(
+      `applyApprovalTransition: verified actor '${actor.id}' belongs to company '${actor.companyId}', not '${companyId}'`,
+    );
+  }
+
   // AUTHORIZATION.md §8 steps 1-2 — authorization choreography runs BEFORE
   // any state-machine computation, so a failure here short-circuits before
   // transitionApprovalState is ever called.
@@ -816,20 +858,37 @@ function tierForHeartbeatStatus(status: HeartbeatStatus): MemoryTier {
  * `target.issueId`'s `goalId` mismatch against the real stored Issue,
  * mirroring how persistIssue already recalls state before writing (§1's
  * invariant).
+ *
+ * ACTOR-IDENTITY-VERIFICATION.md §5 item 4: `actor?: OrgMember` is now
+ * `authorization?: ActorAuthorization` — `verifyActorHoldsClaim` stays as
+ * the claim-ownership check (a different, still-valid question); resolving
+ * `authorization` via `resolveVerifiedActor` happens first, so the full
+ * chain is "verify the caller really is this OrgMember, then verify that
+ * OrgMember holds the claim" instead of just the second half. This is the
+ * only verification point in this function (unlike applyApprovalTransition,
+ * nothing downstream re-verifies the same credential), so no
+ * nonce-double-consumption concern applies here.
  */
 export async function persistHeartbeatSchedule(
   schedule: HeartbeatSchedule,
-  actor?: OrgMember,
+  authorization?: ActorAuthorization,
   previousStatus?: HeartbeatStatus,
   config?: AgentDbAdapterConfig,
 ): Promise<void> {
   assertValidHeartbeatSchedule(schedule);
 
   const stored = await recallHeartbeatSchedule(schedule.companyId, schedule.target, schedule.id, config);
-  if (stored === null && !actor) {
+  if (stored === null && !authorization) {
     throw new ApprovalGateViolationError(
       `Creating HeartbeatSchedule '${schedule.id}' requires an acting OrgMember (HEARTBEATS-AND-COMMS.md §6) — ` +
-        `actor was not supplied`,
+        `authorization was not supplied`,
+    );
+  }
+  const actor = authorization ? await resolveVerifiedActor(authorization, config) : undefined;
+  if (actor && actor.companyId !== schedule.companyId) {
+    throw new ApprovalGateViolationError(
+      `persistHeartbeatSchedule: verified actor '${actor.id}' belongs to company '${actor.companyId}', not ` +
+        `'${schedule.companyId}'`,
     );
   }
 

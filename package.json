@@ -32,7 +32,7 @@
     "metaharness": { "optional": false },
     "ruvector": { "optional": false },
     "agentbbs": { "optional": true },
-    "radio-moe": { "optional": true },
+    "radio-moe": { "optional": false },
     "@metaharness/radio": { "optional": true }
   }
 }

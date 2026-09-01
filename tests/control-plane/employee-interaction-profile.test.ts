@@ -13,6 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mockBridge } from '../support/mock-bridge.js';
+import { credentialFor, nonceMockHandlers } from '../support/actor-credential-fixture.js';
 import { applyApprovalTransition } from '../../src/control-plane/store/agentdb-adapter.js';
 import {
   recallOwnInteractionProfile,
@@ -265,7 +266,13 @@ test('recomputeInteractionSignals ignores submit/revise transitions as latency s
 
 // --- applyApprovalTransition: deps.interactionLearning wiring ---------------
 
-test('applyApprovalTransition with deps.interactionLearning omitted never touches memory_store/memory_retrieve — existing behavior unchanged', async () => {
+test('applyApprovalTransition with deps.interactionLearning omitted never touches the EmployeeInteractionProfile memory_store/memory_retrieve calls — existing behavior unchanged', async () => {
+  // ACTOR-IDENTITY-VERIFICATION.md means EVERY applyApprovalTransition call
+  // now makes its own, unrelated memory_retrieve/memory_store calls (the
+  // credential's nonce-replay guard, namespace 'ruclip-actor-credentials')
+  // regardless of deps.interactionLearning — so this test scopes its
+  // assertion to the EmployeeInteractionProfile namespace/key specifically,
+  // not "memory_* was called at all."
   const original = baseIssue({ approvalState: 'draft', approvalTransitionRef: null, status: 'open' });
   const actor = baseActor({ id: 'om-submitter', kind: 'agent', role: 'Engineer' });
   const approver = baseActor({ id: 'om-approver', kind: 'agent', role: 'Engineer' });
@@ -283,10 +290,25 @@ test('applyApprovalTransition with deps.interactionLearning omitted never touche
     'agentdb_causal-edge': () => ({ success: true }),
     'claims_handoff': () => ({ success: true }),
     'claims_list': activeClaimFor(actor, 'issue-1'),
+    ...nonceMockHandlers(),
   });
-  const result = await applyApprovalTransition('co-1', original, 'submit', actor, null, { approver }, config);
+  const result = await applyApprovalTransition(
+    'co-1',
+    original,
+    'submit',
+    await credentialFor(actor),
+    null,
+    { approver },
+    config,
+  );
   assert.equal(result.issue.approvalState, 'pending');
-  assert.ok(!calls.some((c) => c.toolName === 'memory_store' || c.toolName === 'memory_retrieve'));
+  assert.ok(
+    !calls.some(
+      (c) =>
+        (c.toolName === 'memory_store' || c.toolName === 'memory_retrieve') &&
+        c.args.key === profileKey('co-1', 'om-submitter'),
+    ),
+  );
 });
 
 test('applyApprovalTransition succeeds even when recomputeInteractionSignals fails — interactionLearning is best-effort, same non-blocking contract as notifications', async () => {
@@ -307,15 +329,24 @@ test('applyApprovalTransition succeeds even when recomputeInteractionSignals fai
     'agentdb_causal-edge': () => ({ success: true }),
     'claims_accept-handoff': () => ({ success: true }),
     'claims_list': activeClaimFor(approver, 'issue-1'),
-    // Deliberately NO 'memory_retrieve' handler — recomputeInteractionSignals's
-    // first call throws "No mock handler registered", proving the approval
-    // still succeeds despite that failure.
+    // The credential's own nonce-replay check (namespace
+    // 'ruclip-actor-credentials') must succeed — that is NOT best-effort.
+    // recomputeInteractionSignals's OWN memory_retrieve (the EmployeeInteractionProfile
+    // key) deliberately gets no matching branch below and throws, proving the
+    // approval still succeeds despite THAT failure.
+    'memory_retrieve': (args) =>
+      (args.key as string).startsWith('ruclip:company:co-1:credential-nonce:')
+        ? { found: false }
+        : (() => {
+            throw new Error('No mock handler registered for this memory_retrieve key');
+          })(),
+    'memory_store': () => ({ success: true }),
   });
   const result = await applyApprovalTransition(
     'co-1',
     pendingIssue,
     'approve',
-    approver,
+    await credentialFor(approver),
     submit,
     { interactionLearning: true },
     config,
@@ -341,9 +372,18 @@ test('applyApprovalTransition with deps.interactionLearning: true triggers recom
     'agentdb_causal-edge': () => ({ success: true }),
     'claims_accept-handoff': () => ({ success: true }),
     'claims_list': activeClaimFor(approver, 'issue-1'),
-    'memory_retrieve': () => ({ found: false }), // no profile -> no-op, but the call must have happened
+    'memory_retrieve': () => ({ found: false }), // no profile -> no-op, but the call must have happened; also satisfies the credential's nonce-replay check.
+    'memory_store': () => ({ success: true }), // consumes the credential's nonce.
   });
-  await applyApprovalTransition('co-1', pendingIssue, 'approve', approver, submit, { interactionLearning: true }, config);
+  await applyApprovalTransition(
+    'co-1',
+    pendingIssue,
+    'approve',
+    await credentialFor(approver),
+    submit,
+    { interactionLearning: true },
+    config,
+  );
   assert.ok(calls.some((c) => c.toolName === 'memory_retrieve' && c.args.key === profileKey('co-1', 'om-approver')));
 });
 

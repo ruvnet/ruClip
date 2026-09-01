@@ -226,6 +226,33 @@ interface FederationBbsRegisterResult {
  * touching the already-shipped `Company` interface for an
  * infrastructure-wiring detail.
  */
+/**
+ * ACTOR-IDENTITY-VERIFICATION.md §0's call-site table lists "comms-room
+ * registration / human-join minting" as a site that "trusts... whichever
+ * OrgMember the caller names." Investigated before retrofitting (per that
+ * design's own instruction to check real call sites, not assume): NEITHER
+ * `registerCompanyCommsRoom` nor `mintHumanCommsAccess` below actually
+ * takes an `OrgMember`/actor parameter today — confirmed by reading this
+ * file and grepping every call site (tests included). There is no
+ * caller-named identity here to forge in the first place, so no retrofit
+ * was made to either function.
+ *
+ * `mintHumanCommsAccess` specifically is also structurally incompatible
+ * with gating it behind an `ActorCredential`: ACTOR-IDENTITY-VERIFICATION.md
+ * §4's locked decision blocks EVERY `kind: 'human'` OrgMember from ever
+ * presenting a valid credential (no human issuance path exists). This
+ * function is the one real, already-working mechanism a human uses to gain
+ * comms access at all — gating it behind a credential no human can ever
+ * hold would make it permanently uncallable, a genuine regression of
+ * already-working behavior. That directly contradicts the human-block
+ * decision's own stated justification ("costs nothing functionally today:
+ * there is no dashboard/login flow for a human to exercise any of these
+ * four paths through yet anyway"), which is true for the other three sites
+ * but not this one. Left unretrofitted; flagged back rather than silently
+ * either breaking human comms access or silently leaving a described-as-closed
+ * gap actually open — see docs/PLAN.md §8 and the coder→tester handoff for
+ * this slice.
+ */
 export async function registerCompanyCommsRoom(
   companyId: string,
   config?: AgentDbAdapterConfig,

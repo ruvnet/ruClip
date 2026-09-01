@@ -43,6 +43,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mockBridge } from '../support/mock-bridge.js';
+import { credentialFor, nonceMockHandlers } from '../support/actor-credential-fixture.js';
 import { assertValidApprovalTransition, SchemaValidationError } from '../../src/control-plane/schema/validation.js';
 import {
   persistIssue,
@@ -230,10 +231,14 @@ test(
     const actor = baseActor({ id: 'om-submitter' });
     const approver = baseActor({ id: 'om-approver' });
     const { calls, config } = mockBridge({
-      'agentdb_hierarchical-recall': () => ({ results: [] }),
+      'agentdb_hierarchical-recall': (args) =>
+        args.tier === 'semantic' && args.query === 'ruclip:company:co-1:org-member:om-submitter'
+          ? { results: [{ key: args.query, value: JSON.stringify(actor) }] }
+          : { results: [] },
       'agentdb_hierarchical-store': () => ({ success: true }),
       'agentdb_causal-edge': () => ({ success: true }),
       'claims_handoff': () => ({ success: true }),
+      ...nonceMockHandlers(),
     });
     const failingWitness: WitnessHook = {
       record: async () => {
@@ -241,13 +246,15 @@ test(
       },
     };
 
+    const authorization = await credentialFor(actor);
     await assert.rejects(() =>
-      applyApprovalTransition('co-1', original, 'submit', actor, null, { witness: failingWitness, approver }, config),
+      applyApprovalTransition('co-1', original, 'submit', authorization, null, { witness: failingWitness, approver }, config),
     );
     assert.deepEqual(
       calls.map((c) => c.toolName),
-      ['claims_handoff'],
-      'the pre-transition claims_handoff runs, but no store/delete/causal-edge write should happen once the witness hook rejects',
+      ['memory_retrieve', 'memory_store', 'agentdb_hierarchical-recall', 'claims_handoff'],
+      'credential verification (nonce check/consume + recallOrgMember) and the pre-transition claims_handoff both ' +
+        'run, but no store/delete/causal-edge write should happen once the witness hook rejects',
     );
   },
 );

@@ -24,6 +24,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mockBridge } from '../support/mock-bridge.js';
+import { credentialFor, nonceMockHandlers } from '../support/actor-credential-fixture.js';
 import {
   orgMemberClaimant,
   verifyActorHoldsClaim,
@@ -360,18 +361,26 @@ test('applyApprovalTransition: a failed claims_accept-handoff short-circuits bef
   const pendingIssue = baseIssue({ approvalState: 'pending', approvalTransitionRef: 'transition-submit' });
   const approver = baseActor({ id: 'om-approver' });
   const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': (args) =>
+      args.tier === 'semantic' && args.query === 'ruclip:company:co-1:org-member:om-approver'
+        ? { results: [{ key: args.query, value: JSON.stringify(approver) }] }
+        : { results: [] },
     'claims_accept-handoff': () => ({ success: false, error: 'No pending handoff for this issue' }),
+    ...nonceMockHandlers(),
   });
 
+  const authorization = await credentialFor(approver);
   await assert.rejects(
-    () => applyApprovalTransition('co-1', pendingIssue, 'approve', approver, submit, {}, config),
+    () => applyApprovalTransition('co-1', pendingIssue, 'approve', authorization, submit, {}, config),
     ClaimAuthorizationError,
   );
-  // No hierarchical-recall/store — proves the rejection happened before
-  // persistIssue (and before transitionApprovalState) ever ran.
+  // No hierarchical-store — proves the rejection happened before persistIssue
+  // (and before transitionApprovalState) ever ran; the hierarchical-recall
+  // seen here is credential verification's own recallOrgMember, which now
+  // necessarily runs before claims_accept-handoff.
   assert.deepEqual(
     calls.map((c) => c.toolName),
-    ['claims_accept-handoff'],
+    ['memory_retrieve', 'memory_store', 'agentdb_hierarchical-recall', 'claims_accept-handoff'],
   );
 });
 
@@ -444,6 +453,7 @@ function createStatefulBridge() {
       const claimant = type === 'human' ? { type, userId: id, name: label } : { type, agentId: id, agentType: label };
       return { success: true, claims: [{ issueId: 'issue-1', claimant, status: claim.status }] };
     },
+    ...nonceMockHandlers(),
   });
   return { calls, config };
 }
@@ -464,14 +474,22 @@ test('End-to-end round trip: submit -> approve against a stateful mock', async (
 
   const draft = baseIssue({ approvalState: 'draft', approvalTransitionRef: null });
   await persistIssue('co-1', draft, undefined, undefined, undefined, config);
-  const submitResult = await applyApprovalTransition('co-1', draft, 'submit', submitter, null, { approver }, config);
+  const submitResult = await applyApprovalTransition(
+    'co-1',
+    draft,
+    'submit',
+    await credentialFor(submitter),
+    null,
+    { approver },
+    config,
+  );
   assert.equal(submitResult.issue.approvalState, 'pending');
 
   const approveResult = await applyApprovalTransition(
     'co-1',
     submitResult.issue,
     'approve',
-    approver,
+    await credentialFor(approver),
     submitResult.transition,
     {},
     config,
@@ -492,14 +510,22 @@ test('End-to-end round trip: submit -> reject -> revise against a stateful mock'
 
   const draft = baseIssue({ approvalState: 'draft', approvalTransitionRef: null });
   await persistIssue('co-1', draft, undefined, undefined, undefined, config);
-  const submitResult = await applyApprovalTransition('co-1', draft, 'submit', submitter, null, { approver }, config);
+  const submitResult = await applyApprovalTransition(
+    'co-1',
+    draft,
+    'submit',
+    await credentialFor(submitter),
+    null,
+    { approver },
+    config,
+  );
   assert.equal(submitResult.issue.approvalState, 'pending');
 
   const rejectResult = await applyApprovalTransition(
     'co-1',
     submitResult.issue,
     'reject',
-    approver,
+    await credentialFor(approver),
     submitResult.transition,
     { reason: 'needs more detail', handoffTo: submitter },
     config,
@@ -511,7 +537,7 @@ test('End-to-end round trip: submit -> reject -> revise against a stateful mock'
     'co-1',
     rejectResult.issue,
     'revise',
-    submitter,
+    await credentialFor(submitter),
     rejectResult.transition,
     {},
     config,

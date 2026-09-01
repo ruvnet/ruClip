@@ -16,6 +16,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mockBridge } from '../support/mock-bridge.js';
+import { credentialFor, nonceMockHandlers } from '../support/actor-credential-fixture.js';
 import {
   heartbeatKey,
   persistHeartbeatSchedule,
@@ -169,15 +170,22 @@ test('persistHeartbeatSchedule (issue target, actor supplied) reuses verifyActor
   const actor = baseActor();
   const issue = baseIssue();
   const { calls, config } = mockBridge({
-    'agentdb_hierarchical-recall': (args) =>
-      args.tier === 'working' && args.query === 'ruclip:company:co-1:goal:goal-1:issue:issue-1'
-        ? { results: [{ key: 'ruclip:company:co-1:goal:goal-1:issue:issue-1', value: JSON.stringify(issue) }] }
-        : { results: [] },
+    'agentdb_hierarchical-recall': (args) => {
+      if (args.tier === 'working' && args.query === 'ruclip:company:co-1:goal:goal-1:issue:issue-1') {
+        return { results: [{ key: 'ruclip:company:co-1:goal:goal-1:issue:issue-1', value: JSON.stringify(issue) }] };
+      }
+      if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1:org-member:om-1') {
+        return { results: [{ key: args.query, value: JSON.stringify(actor) }] };
+      }
+      return { results: [] };
+    },
     'claims_list': activeClaimFor(actor, 'issue-1'),
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_causal-edge': () => ({ success: true }),
+    ...nonceMockHandlers(),
   });
-  await assert.doesNotReject(() => persistHeartbeatSchedule(baseSchedule(), actor, undefined, config));
+  const authorization = await credentialFor(actor);
+  await assert.doesNotReject(() => persistHeartbeatSchedule(baseSchedule(), authorization, undefined, config));
   assert.ok(calls.some((c) => c.toolName === 'claims_list'));
 });
 
@@ -185,28 +193,45 @@ test('persistHeartbeatSchedule (issue target, actor supplied) rejects when the a
   const actor = baseActor();
   const issue = baseIssue();
   const { config } = mockBridge({
-    'agentdb_hierarchical-recall': (args) =>
-      args.tier === 'working' && args.query === 'ruclip:company:co-1:goal:goal-1:issue:issue-1'
-        ? { results: [{ key: 'ruclip:company:co-1:goal:goal-1:issue:issue-1', value: JSON.stringify(issue) }] }
-        : { results: [] },
+    'agentdb_hierarchical-recall': (args) => {
+      if (args.tier === 'working' && args.query === 'ruclip:company:co-1:goal:goal-1:issue:issue-1') {
+        return { results: [{ key: 'ruclip:company:co-1:goal:goal-1:issue:issue-1', value: JSON.stringify(issue) }] };
+      }
+      if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1:org-member:om-1') {
+        return { results: [{ key: args.query, value: JSON.stringify(actor) }] };
+      }
+      return { results: [] };
+    },
     'claims_list': () => ({ success: true, claims: [] }),
     'agentdb_hierarchical-store': () => ({ success: true }),
+    ...nonceMockHandlers(),
   });
-  await assert.rejects(() => persistHeartbeatSchedule(baseSchedule(), actor, undefined, config), ClaimAuthorizationError);
+  const authorization = await credentialFor(actor);
+  await assert.rejects(
+    () => persistHeartbeatSchedule(baseSchedule(), authorization, undefined, config),
+    ClaimAuthorizationError,
+  );
 });
 
 test('persistHeartbeatSchedule rejects when target.goalId does not match the real issue.goalId', async () => {
   const actor = baseActor();
   const issue = baseIssue({ goalId: 'goal-actual' });
   const { config } = mockBridge({
-    'agentdb_hierarchical-recall': (args) =>
-      args.tier === 'working' && args.query === 'ruclip:company:co-1:goal:goal-1:issue:issue-1'
-        ? { results: [{ key: 'ruclip:company:co-1:goal:goal-1:issue:issue-1', value: JSON.stringify(issue) }] }
-        : { results: [] },
+    'agentdb_hierarchical-recall': (args) => {
+      if (args.tier === 'working' && args.query === 'ruclip:company:co-1:goal:goal-1:issue:issue-1') {
+        return { results: [{ key: 'ruclip:company:co-1:goal:goal-1:issue:issue-1', value: JSON.stringify(issue) }] };
+      }
+      if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1:org-member:om-1') {
+        return { results: [{ key: args.query, value: JSON.stringify(actor) }] };
+      }
+      return { results: [] };
+    },
     'agentdb_hierarchical-store': () => ({ success: true }),
+    ...nonceMockHandlers(),
   });
+  const authorization = await credentialFor(actor);
   await assert.rejects(
-    () => persistHeartbeatSchedule(baseSchedule(), actor, undefined, config),
+    () => persistHeartbeatSchedule(baseSchedule(), authorization, undefined, config),
     ApprovalGateViolationError,
   );
 });
@@ -216,14 +241,21 @@ test('persistHeartbeatSchedule (goal target) does not call claims_list — a bar
   const goal = baseGoal();
   const schedule = baseSchedule({ target: { kind: 'goal', goalId: 'goal-1' } });
   const { calls, config } = mockBridge({
-    'agentdb_hierarchical-recall': (args) =>
-      args.tier === 'semantic' && args.query === 'ruclip:company:co-1:goal:goal-1'
-        ? { results: [{ key: 'ruclip:company:co-1:goal:goal-1', value: JSON.stringify(goal) }] }
-        : { results: [] },
+    'agentdb_hierarchical-recall': (args) => {
+      if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1:goal:goal-1') {
+        return { results: [{ key: 'ruclip:company:co-1:goal:goal-1', value: JSON.stringify(goal) }] };
+      }
+      if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1:org-member:om-1') {
+        return { results: [{ key: args.query, value: JSON.stringify(actor) }] };
+      }
+      return { results: [] };
+    },
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_causal-edge': () => ({ success: true }),
+    ...nonceMockHandlers(),
   });
-  await assert.doesNotReject(() => persistHeartbeatSchedule(schedule, actor, undefined, config));
+  const authorization = await credentialFor(actor);
+  await assert.doesNotReject(() => persistHeartbeatSchedule(schedule, authorization, undefined, config));
   assert.ok(!calls.some((c) => c.toolName === 'claims_list'));
 });
 
@@ -687,6 +719,7 @@ test('applyApprovalTransition publishes issue-approval-transition after a legal 
     'agentdb_causal-edge': () => ({ success: true }),
     'claims_handoff': () => ({ success: true }),
     'claims_list': activeClaimFor(actor, 'issue-1'),
+    ...nonceMockHandlers(),
   });
   const published: NotificationEvent[] = [];
   const notifications: NotificationChannel = {
@@ -696,7 +729,15 @@ test('applyApprovalTransition publishes issue-approval-transition after a legal 
     },
   };
 
-  const result = await applyApprovalTransition('co-1', original, 'submit', actor, null, { approver, notifications }, config);
+  const result = await applyApprovalTransition(
+    'co-1',
+    original,
+    'submit',
+    await credentialFor(actor),
+    null,
+    { approver, notifications },
+    config,
+  );
 
   assert.equal(published.length, 1);
   assert.equal(published[0]?.kind, 'issue-approval-transition');
@@ -729,6 +770,7 @@ test('applyApprovalTransition succeeds even when deps.notifications.publish reje
     'agentdb_causal-edge': () => ({ success: true }),
     'claims_handoff': () => ({ success: true }),
     'claims_list': activeClaimFor(actor, 'issue-1'),
+    ...nonceMockHandlers(),
   });
   const throwingChannel: NotificationChannel = {
     publish: async () => {
@@ -739,7 +781,7 @@ test('applyApprovalTransition succeeds even when deps.notifications.publish reje
     'co-1',
     original,
     'submit',
-    actor,
+    await credentialFor(actor),
     null,
     { approver, notifications: throwingChannel },
     config,

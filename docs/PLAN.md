@@ -491,17 +491,112 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
    authentication/login must be solved as this phase's first concern, not
    designed later. `ActorCredential` verification (the cross-cutting fix
    for the actor-forgery gap security found — closes it for agent
-   `OrgMember`s via `claims_accept-handoff`) has no working issuance path
-   for `kind: 'human'` actors — no dashboard/login flow exists anywhere in
-   ruClip yet to issue one through. All four actor-taking call sites
-   (approval decisions, comms-room registration, heartbeat creation,
-   `EmployeeInteractionProfile` consent) therefore **block** human-initiated
-   actions outright until this phase ships a real issuance mechanism — a
-   deliberate fail-closed choice, not an oversight, and it costs nothing
-   functionally today since no human-facing flow exercises these paths yet
-   either. Phase 2's own design doc must solve human credential issuance
-   first, the same way `ACTOR-IDENTITY-VERIFICATION.md` solved agent
-   issuance by chaining off `claims_accept-handoff` succeeding.
+   `OrgMember`s via a fresh, per-call, cryptographically-signed credential)
+   has no working issuance path for `kind: 'human'` actors — no
+   dashboard/login flow exists anywhere in ruClip yet to issue one through.
+   Phase 2's own design doc must solve human credential issuance first.
+   - **Delivered this iteration** (`ACTOR-IDENTITY-VERIFICATION.md`,
+     `src/control-plane/authorization/{actor-credential,credential-issuer}.ts`):
+     `ActorCredential` (signed via `radio-moe`'s real `AgentFrame`
+     `signFrame`/`verifyFrame`, §1-2), the single-use nonce replay guard
+     (`memory_store`'s real `ttl` parameter, §3), and `mintActorCredential`/
+     `resolveAdmittedIssuerKeys` (§4 — durable issuer keypair signing).
+     Retrofitted **3 of the design's 5 named call sites**:
+     `applyApprovalTransition`, `persistIssue`'s Guard C, and
+     `persistHeartbeatSchedule` now take `ActorAuthorization` (a verified
+     credential) instead of a caller-self-asserted `OrgMember` — the exact
+     bypass security found (approve/reject with a forged, *different*
+     `actorId` than the real submitter) is closed and regression-tested
+     (`tests/control-plane/actor-identity-verification.test.ts`). 207 tests
+     total (up from 195), `tsc --strict` clean, verified against the real
+     installed `radio-moe@0.3.1` (not a mock) end to end, including real
+     Ed25519 signing/verification. `radio-moe`'s `peerDependenciesMeta` is
+     now `optional: false` (required for this mechanism specifically;
+     `comms/agentbbs-notification-channel.ts`'s own, separate, best-effort
+     signing usage is untouched).
+   - **2 of the 5 named call sites deliberately NOT retrofitted — found
+     while implementing, flagged rather than silently forced or silently
+     skipped**: `mintHumanCommsAccess`
+     (`comms/agentbbs-notification-channel.ts`) and
+     `setInteractionProfileConsent`
+     (`employee-augmentation/interaction-profile.ts`) are each the ONE
+     currently-working, human-reachable path for their respective feature
+     (comms onboarding; consent self-service) — both are already gated on
+     `kind === 'human'` by their own logic, and `resolveVerifiedActor`
+     unconditionally rejects every `kind: 'human'` OrgMember (§4's locked
+     block decision). Retrofitting either would make it **permanently
+     uncallable**, not more secure — a real functional regression, directly
+     contradicting the block decision's own justification ("costs nothing
+     functionally today... no dashboard/login flow ... yet anyway"), which
+     is true for the other three sites but not these two. Left as they were
+     (comms registration/human-join never took an actor param to forge in
+     the first place — also a design-doc/reality mismatch, found and
+     documented in the comms file's own header); both files carry a
+     detailed code comment explaining why. **Recommendation for
+     architect/team-lead**: either scope the human-block decision
+     per-call-site (block approval-decision/heartbeat forgery for humans,
+     which matters; leave onboarding/self-service consent on the
+     pre-existing weaker check, which doesn't have an alternative until
+     Phase 2) or accept this as Phase 2's own prerequisite scope and revisit
+     both sites there.
+   - **One necessary deviation from a literal reading of §5 items 1-2**: the
+     design's own text ("hands \[the newly-minted credential\] back to the
+     calling session for the *rest of that same flow* — e.g., threaded into
+     `persistIssue`'s Guard C instead of a bare `actor`") and §3's single-use
+     nonce are mutually exclusive if `applyApprovalTransition` and
+     `persistIssue`'s Guard C each independently call
+     `verifyActorCredential` on the *same* credential — the second call
+     would hit its own nonce-replay guard and fail every legitimate
+     approve/reject/submit. Resolved by verifying the credential exactly
+     ONCE, at `applyApprovalTransition`'s own top (before any side effect,
+     so replay protection actually gates the consequential `claims_*`
+     mutations, not just the final persist step), and threading the
+     resulting, already-verified `OrgMember` into `persistIssue`'s Guard C
+     — which now accepts EITHER `{ actor: OrgMember }` (pre-verified,
+     internal callers) OR `{ credential, admittedIssuerKeys }`
+     (independently verified, standalone/direct callers) as a union type.
+     Documented in both functions' own header comments.
+   - **One radio-moe API surprise, resolved not blocked**: `PeerIdentity`
+     (`credential-issuer.ts`'s original literal premise for a "durable,
+     GCP-Secret-Manager-backed identity") has a `private constructor()` —
+     its only public construction path is `PeerIdentity.generate()`, which
+     always mints a fresh in-process keypair; there is no way to reconstruct
+     one from an externally-stored private key. Confirmed by reading
+     `radio-moe`'s compiled `dist/transport.js`/`dist/agent-frame.js`
+     directly (not just the `.d.ts`), which also showed
+     `PeerIdentity.sign()`/`signFrame`/`verifyFrame` are thin wrappers over
+     plain `node:crypto` Ed25519 using the same DER SPKI encoding
+     `generateKeyPairSync('ed25519', ...)` already produces. `credential-issuer.ts`
+     therefore signs directly with `node:crypto` against a durably-stored
+     keypair, reproducing `signFrame`'s exact byte contract via `radio-moe`'s
+     own exported `canonicalBytes` — verification is completely untouched,
+     real `radio-moe` `verifyFrame` end to end; only issuance needed a
+     different mechanism than `PeerIdentity.generate()` offers. No real GCP
+     secret is provisioned by this slice — `RUCLIP_ISSUER_SIGNING_SECRET`/
+     `RUCLIP_ISSUER_SIGNING_PROJECT` name where one would be read from
+     (`gcloud secrets versions access`, argument array not a shell string),
+     and tests inject a throwaway, test-only keypair directly
+     (`tests/support/actor-credential-fixture.ts`) — provisioning the real
+     secret is a deployment-time step, tracked, not done here.
+   - **One interpretation choice on agent issuance (§4), flagged for
+     confirmation**: §4's own text describes minting a credential
+     "immediately after `acceptClaimHandoff` succeeds inside
+     `applyApprovalTransition`'s existing choreography." Implemented
+     instead as a standalone `mintActorCredential` primitive, callable by
+     whatever code establishes an agent OrgMember's first credential in a
+     session — NOT nested inside `applyApprovalTransition` itself — because
+     `applyApprovalTransition`'s own entry parameter is now
+     `credential: ActorCredential` per §5 item 1 (every action, including
+     `submit`, requires a PRE-EXISTING verified credential); nesting the
+     mint inside would require the function to also accept a bare,
+     self-asserted `actor` for its very first call, which would reopen
+     exactly the gap this design closes. `claims_accept-handoff` succeeding
+     is itself still just a self-asserted-claimant-string check (per §0's
+     own finding) — it is not, by itself, proof of caller identity, so it
+     was not treated as a sufficient anchor for an *automatic* internal
+     mint. Genuinely ambiguous in the source document; implemented the
+     interpretation that doesn't reopen the gap, flagged rather than guessed
+     silently.
 4. **Phase 3 — ruclip-metaharness**: build-time bench suite, `score`/`genome`
    gates against the ruClip codebase. **Amended 2026-09-01**: no longer
    includes a runtime bench suite, `redblue`, or `flywheel` — that scope moved
