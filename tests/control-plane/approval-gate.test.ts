@@ -115,7 +115,10 @@ function activeClaimFor(actor: OrgMember, issueId: string) {
     success: true,
     claims: [
       {
-        issueId,
+        // Cross-tenant claim collision fix (ruvnet/ruClip#5 Finding 1) —
+        // claims-authorization.ts now sends/compares a company-prefixed
+        // issueId, not the bare one.
+        issueId: `${actor.companyId}:${issueId}`,
         claimant:
           actor.kind === 'agent'
             ? { type: 'agent', agentId: actor.id, agentType: actor.role }

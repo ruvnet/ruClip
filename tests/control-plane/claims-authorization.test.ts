@@ -111,7 +111,9 @@ test('verifyActorHoldsClaim resolves when claims_list reports a matching active 
   const { config } = mockBridge({
     'claims_list': () => ({
       success: true,
-      claims: [{ issueId: 'issue-1', claimant: { type: 'agent', agentId: 'om-submitter', agentType: 'Engineer' }, status: 'active' }],
+      // Cross-tenant claim collision fix (ruvnet/ruClip#5 Finding 1) —
+      // company-prefixed, matching baseActor()'s companyId: 'co-1'.
+      claims: [{ issueId: 'co-1:issue-1', claimant: { type: 'agent', agentId: 'om-submitter', agentType: 'Engineer' }, status: 'active' }],
     }),
   });
   await assert.doesNotReject(() => verifyActorHoldsClaim('issue-1', actor, config));
@@ -156,7 +158,7 @@ test(
       'claims_list': () => ({ success: true, claims: [{ claimant: { type: 'agent' } }] }),
       'claims_board': () => ({
         success: true,
-        board: { active: [{ issueId: 'issue-1', claimant: 'agent:om-submitter:Engineer' }] },
+        board: { active: [{ issueId: 'co-1:issue-1', claimant: 'agent:om-submitter:Engineer' }] },
       }),
     });
     await assert.doesNotReject(() => verifyActorHoldsClaim('issue-1', actor, config));
@@ -175,6 +177,53 @@ test('verifyActorHoldsClaim fails loudly (not silently) when both claims_list ha
   });
   await assert.rejects(() => verifyActorHoldsClaim('issue-1', actor, config), ClaimAuthorizationError);
 });
+
+// --- Cross-tenant claim collision fix (ruvnet/ruClip#5 Finding 1) --------
+
+test(
+  'CLOSES THE FINDING: a genuine claim filed by an OrgMember in company A no longer satisfies ' +
+    'verifyActorHoldsClaim for an unrelated actor with a COINCIDENTALLY IDENTICAL claimant string ' +
+    "(kind:id:role) and the SAME LITERAL issue id in company B — the real bridge's claims_list has no " +
+    'companyId scoping of its own, so before this fix these two records would have been indistinguishable',
+  async () => {
+    // Same literal issueId ('issue-1' — realistic, predictable seed data,
+    // exactly what the external team's reproduction hit) and the SAME
+    // claimant string (kind:id:role happens to collide) claimed by an
+    // OrgMember genuinely belonging to company A.
+    const actorInCompanyA = baseActor({ id: 'om-collide', companyId: 'company-a', kind: 'agent', role: 'Engineer' });
+    const actorInCompanyB = baseActor({ id: 'om-collide', companyId: 'company-b', kind: 'agent', role: 'Engineer' });
+    assert.equal(
+      orgMemberClaimant(actorInCompanyA),
+      orgMemberClaimant(actorInCompanyB),
+      'test setup sanity check: the two actors must share an identical claimant string for this to be a real collision test',
+    );
+
+    // The real bridge has no companyId field on a claim record at all — this
+    // mock reflects that: claims_list({claimant}) returns every claim for
+    // that claimant string bridge-wide, and the ONLY genuine claim on
+    // record is company A's (company-a:issue-1), never company B's.
+    const { config } = mockBridge({
+      'claims_list': () => ({
+        success: true,
+        claims: [
+          {
+            issueId: 'company-a:issue-1',
+            claimant: { type: 'agent', agentId: 'om-collide', agentType: 'Engineer' },
+            status: 'active',
+          },
+        ],
+      }),
+    });
+
+    // Company A's actor genuinely holds the claim — resolves.
+    await assert.doesNotReject(() => verifyActorHoldsClaim('issue-1', actorInCompanyA, config));
+    // Company B's actor, despite an identical claimant string and an
+    // identical bare issueId, does NOT hold a claim scoped to company B —
+    // rejects. Pre-fix, both of these would have resolved (the bare
+    // 'issue-1' + matching claimant string would have satisfied both).
+    await assert.rejects(() => verifyActorHoldsClaim('issue-1', actorInCompanyB, config), ClaimAuthorizationError);
+  },
+);
 
 // --- claimIssueForActor / handoffClaim / acceptClaimHandoff --------------
 
@@ -200,6 +249,18 @@ test('handoffClaim resolves on success and throws ClaimAuthorizationError on fai
   });
   await assert.rejects(() => handoffClaim('issue-1', from, to, undefined, failConfig), ClaimAuthorizationError);
 });
+
+test(
+  'handoffClaim rejects when from/to belong to different companies, before ever calling claims_handoff — ' +
+    'a company-mismatched `to` would otherwise silently scope the composite key to the wrong company',
+  async () => {
+    const from = baseActor({ id: 'om-submitter', companyId: 'company-a' });
+    const to = baseActor({ id: 'om-approver', companyId: 'company-b' });
+    const { calls, config } = mockBridge({ 'claims_handoff': () => ({ success: true }) });
+    await assert.rejects(() => handoffClaim('issue-1', from, to, undefined, config), ClaimAuthorizationError);
+    assert.ok(!calls.some((c) => c.toolName === 'claims_handoff'), 'must reject before ever calling the bridge');
+  },
+);
 
 test('acceptClaimHandoff resolves on success and throws ClaimAuthorizationError on failure', async () => {
   const actor = baseActor({ id: 'om-approver' });
@@ -451,7 +512,9 @@ function createStatefulBridge() {
       }
       const [type, id, label] = (claim.claimant as string).split(':');
       const claimant = type === 'human' ? { type, userId: id, name: label } : { type, agentId: id, agentType: label };
-      return { success: true, claims: [{ issueId: 'issue-1', claimant, status: claim.status }] };
+      // Cross-tenant claim collision fix (ruvnet/ruClip#5 Finding 1) —
+      // company-prefixed, matching this test file's actors' companyId: 'co-1'.
+      return { success: true, claims: [{ issueId: 'co-1:issue-1', claimant, status: claim.status }] };
     },
     ...nonceMockHandlers(),
   });

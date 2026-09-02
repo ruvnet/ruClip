@@ -1978,6 +1978,75 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
     code task — a doc comment on `issueKey`/`recallIssue` is fine if
     free while touching the area, not worth its own scope. Routed to
     `ruclip-coder`.
+    - **Delivered (2026-09-02, coder)**: `claims-authorization.ts` — new
+      `claimIssueId(companyId, issueId)` helper (`` `${companyId}:${issueId}` ``,
+      both halves through `assertSafeId`), used as the ACTUAL wire-level
+      `issueId` sent to `claims_claim`/`claims_handoff`/`claims_accept-handoff`
+      and compared against what `claims_list`/`claims_board` return in
+      `verifyActorHoldsClaim`. Deliberately did NOT add `companyId` as a
+      new parameter on any of the four public functions — every one
+      already receives the acting `OrgMember`(s), and every real call site
+      in `agentdb-adapter.ts` (checked all 5: `checkAuthorizationGuard`,
+      `applyApprovalTransition` x3, `persistHeartbeatSchedule`) already
+      independently verifies `actor.companyId` matches the `companyId` in
+      scope before calling in — so `actor.companyId` (or `from.companyId`
+      for `handoffClaim`) is the correct, already-trusted source, not a
+      second value that could drift from it. Smaller blast radius than a
+      signature change: zero edits needed to `agentdb-adapter.ts`'s call
+      sites.
+      Two things verified empirically, not assumed, matching this
+      project's discipline: (1) read the real bridge's own
+      `validateIdentifier` (`v3/@claude-flow/cli-core/src/mcp-tools/
+      validate-input.ts` in the ruflo monorepo) and confirmed its
+      identifier charset explicitly allows `:` — the composite key isn't
+      rejected server-side; (2) the other-bridge-consumer check team-lead
+      asked for: searched the ruflo monorepo (the only other real
+      consumer source available in this session — `agentbbs` and
+      `autogenous-service` are separate repos with no local checkout,
+      genuinely not checkable here) for anything besides `claims-tools.ts`
+      itself reading `claims_list`'s `issueId` field — found none
+      (`guidance-tools.ts` has a same-named `claims_list` string but it's
+      an unrelated permission-grant capability-registry entry, not code
+      reading a work-claim record). Stating this plainly per team-lead's
+      instruction: this is "no other consumer found in what I could
+      check," NOT "confirmed safe for agentbbs/autogenous-service" — if
+      either reads claims by bare `issueId` against the same bridge, this
+      IS a breaking convention change for them.
+      Added a `handoffClaim`-specific hardening while in the area (not a
+      new scope item — a direct consequence of building the composite
+      key correctly): asserts `from.companyId === to.companyId` before
+      building the key, since `deps.approver`/`deps.handoffTo` in
+      `applyApprovalTransition` are NOT independently companyId-checked
+      at that call site (confirmed by reading it — a real, pre-existing
+      gap, left as-is, out of Finding 1's scope, flagged here rather than
+      silently fixed or silently ignored).
+      Regression coverage directly answering team-lead's ask: a new test
+      simulates two companies (`company-a`/`company-b`) with an identical
+      claimant string (`kind:id:role` collision) and the identical literal
+      issueId (`issue-1`) — confirms company A's actor still resolves,
+      company B's actor now rejects (pre-fix, both would have resolved).
+      A second new test confirms `handoffClaim` rejects a company-mismatched
+      `from`/`to` pair before ever calling the bridge. Verified both are
+      meaningful, not trivially passing: temporarily reverted
+      `claims-authorization.ts` to the pre-fix version (`git show
+      d8e5d67:...claims-authorization.ts`), rebuilt, and confirmed 20
+      tests fail (both new tests plus every existing fixture updated to
+      expect the composite key) before restoring the fix.
+      Updated 6 existing test files whose mock fixtures hardcoded the
+      bare `issue-1` in `claims_list`/`claims_board` mock responses to the
+      composite `co-1:issue-1` form (`claims-authorization.test.ts`,
+      `approval-gate.test.ts`, `authorization-trust-boundary.test.ts`,
+      `employee-interaction-profile.test.ts`, `heartbeats-and-comms.test.ts`,
+      `human-identity-attestation.test.ts`) — every one of these actors'
+      `companyId` was already `'co-1'` in their existing fixtures, so this
+      is a fixture-format update, not a behavior change to what those
+      tests actually verify.
+      Finding 2: no code change made (per team-lead's disposition above —
+      not worth its own scope); left for a future pass if this area is
+      touched again.
+      `tsc --strict` clean, 317/317 (was 315) on both Node 20.20.2 and
+      22.22.1. Full pipeline this time per team-lead's explicit call —
+      routing to `ruclip-tester`.
 - **Fixed 2026-09-02 (`scripts/run-tests.mjs`)**: `.github/workflows/ci.yml`
   pins `node-version: 20`, but `package.json`'s `test` script passed a
   quoted glob (`"dist/**/*.test.js"`) directly to `node --test` — glob

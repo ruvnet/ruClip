@@ -34,9 +34,62 @@
  *    The fallback below only reads `board.active`, matching the
  *    `status: 'active'` filter `verifyActorHoldsClaim` applies to the
  *    primary `claims_list` path.
+ *
+ * **Cross-tenant claim collision fix (2026-09-02, `ruvnet/ruClip#5` Finding
+ * 1, team-lead approved, full pipeline)**: the real ruflo bridge does not
+ * scope `claims_*` records by `companyId` at all — `claims_list({claimant})`
+ * returns every claim for that claimant string across every company sharing
+ * the bridge, and `Issue.id`/`OrgMember.id` are only charset-validated
+ * (`assertSafeId`), never enforced globally unique. Two companies with the
+ * same literal issue id (predictable seed data like `issue-1` makes this
+ * realistic, not contrived — exactly what the external team's own
+ * reproduction hit) could therefore collide: a genuine claim filed by an
+ * OrgMember in company A satisfies `verifyActorHoldsClaim` for an unrelated
+ * actor+issue in company B, provided that actor's claimant string
+ * (`kind:id:role`) happens to match. Bounded severity, not an open bypass —
+ * `checkAuthorizationGuard`/`applyApprovalTransition`
+ * (`store/agentdb-adapter.ts`) already require an already-credentialed
+ * actor whose own `companyId` is verified before any of these functions
+ * run — but a real, worth-fixing gap for an attacker who already holds a
+ * genuine credential in the target company.
+ *
+ * Fix: every `issueId` string actually sent to `claims_claim`/
+ * `claims_handoff`/`claims_accept-handoff`, and compared against what
+ * `claims_list`/`claims_board` return, is company-prefixed
+ * (`` `${companyId}:${issueId}` `` via `claimIssueId` below) — scoped
+ * entirely within this file, no ruflo bridge change needed. `companyId` is
+ * NOT a new parameter on these functions' public signatures — every one
+ * already receives the acting `OrgMember`(s), and every real call site in
+ * `agentdb-adapter.ts` already independently verifies `actor.companyId`
+ * matches the `companyId` in scope before calling in (confirmed by reading
+ * every call site, not assumed) — so `actor.companyId` (or `from.companyId`
+ * for `handoffClaim`, which also now asserts `from`/`to` share a company —
+ * see that function) is the correct, already-trusted source, not a second
+ * independently-supplied value that could drift from it.
+ * `claimIssueId` runs both halves through `assertSafeId` — cheap, matches
+ * this codebase's existing discipline for every other composite AgentDB
+ * key, and confirmed empirically (read the real bridge's
+ * `validateIdentifier` in `v3/@claude-flow/cli-core/src/mcp-tools/
+ * validate-input.ts` in the ruflo monorepo — not assumed) that the real
+ * bridge's own server-side `issueId` validation explicitly allows `:` in
+ * its identifier charset, so the composite key is not rejected upstream.
+ *
+ * **Other-consumer check (explicitly asked for, not assumed safe)**:
+ * searched the ruflo monorepo (the only other real consumer source this
+ * repo has read access to) for anything besides `claims-tools.ts` itself
+ * reading `claims_list`'s `issueId` field — found none (`guidance-tools.ts`
+ * lists a same-named `claims_list` under an unrelated permission-grant
+ * "Security & Compliance" capability group, a static registry string, not
+ * code reading a work-claim record). `agentbbs` and `autogenous-service`
+ * are separate repos this session has no local checkout of and could not
+ * search directly — **this is not confirmed safe for those**, only "no
+ * other consumer found in what I could check." If either reads claims by
+ * bare `issueId` against the same bridge, this IS a breaking convention
+ * change for them, not just an internal ruClip detail — flagging this
+ * plainly rather than asserting safety I couldn't verify.
  */
 import type { OrgMember } from '../schema/org-member.js';
-import { callTool, AgentDbBridgeError, type AgentDbAdapterConfig } from '../store/bridge-client.js';
+import { callTool, AgentDbBridgeError, assertSafeId, type AgentDbAdapterConfig } from '../store/bridge-client.js';
 
 export class ClaimAuthorizationError extends AgentDbBridgeError {
   constructor(message: string) {
@@ -87,6 +140,13 @@ interface ClaimsBoardResult {
 /** claims_list record statuses treated as "actor currently holds the claim" — see verifyActorHoldsClaim's header comment. */
 const LIVE_CLAIM_STATUSES = new Set(['active', 'handoff-pending']);
 
+/** Company-scopes the issueId string sent to/compared against the real claims_* bridge calls — see file header "Cross-tenant claim collision fix". */
+function claimIssueId(companyId: string, issueId: string): string {
+  assertSafeId(companyId, 'companyId');
+  assertSafeId(issueId, 'issueId');
+  return `${companyId}:${issueId}`;
+}
+
 /**
  * Read-only, defense-in-depth check: does `actor` currently, externally hold
  * the claim on `issueId` per ruflo's claims system? Throws
@@ -123,6 +183,7 @@ export async function verifyActorHoldsClaim(
   config?: AgentDbAdapterConfig,
 ): Promise<void> {
   const claimant = orgMemberClaimant(actor);
+  const scopedIssueId = claimIssueId(actor.companyId, issueId);
   const listResult = await callTool<ClaimsListResult>('claims_list', { claimant }, config);
   if (listResult.success === false) {
     throw new ClaimAuthorizationError(
@@ -135,10 +196,12 @@ export async function verifyActorHoldsClaim(
 
   if (shapeLooksReal) {
     const hasClaim = claims!.some(
-      (c) => c.issueId === issueId && formatRawClaimant(c.claimant) === claimant && LIVE_CLAIM_STATUSES.has(c.status),
+      (c) => c.issueId === scopedIssueId && formatRawClaimant(c.claimant) === claimant && LIVE_CLAIM_STATUSES.has(c.status),
     );
     if (!hasClaim) {
-      throw new ClaimAuthorizationError(`Actor '${actor.id}' does not hold the claim on issue '${issueId}'`);
+      throw new ClaimAuthorizationError(
+        `Actor '${actor.id}' does not hold the claim on issue '${issueId}' in company '${actor.companyId}'`,
+      );
     }
     return;
   }
@@ -157,11 +220,11 @@ export async function verifyActorHoldsClaim(
   }
   const liveEntries = [...(boardResult.board?.active ?? []), ...(boardResult.board?.['handoff-pending'] ?? [])];
   const hasClaim = liveEntries.some(
-    (entry) => entry.issueId === issueId && (entry.claimant === claimant || entry.from === claimant),
+    (entry) => entry.issueId === scopedIssueId && (entry.claimant === claimant || entry.from === claimant),
   );
   if (!hasClaim) {
     throw new ClaimAuthorizationError(
-      `Actor '${actor.id}' does not hold the claim on issue '${issueId}' (verified via claims_board fallback)`,
+      `Actor '${actor.id}' does not hold the claim on issue '${issueId}' in company '${actor.companyId}' (verified via claims_board fallback)`,
     );
   }
 }
@@ -180,7 +243,7 @@ export async function claimIssueForActor(
 ): Promise<void> {
   const result = await callTool<ClaimsMutationResult>(
     'claims_claim',
-    { issueId, claimant: orgMemberClaimant(actor), context },
+    { issueId: claimIssueId(actor.companyId, issueId), claimant: orgMemberClaimant(actor), context },
     config,
   );
   if (result.success === false) {
@@ -190,7 +253,19 @@ export async function claimIssueForActor(
   }
 }
 
-/** Thin wrapper over claims_handoff — requests (does not immediately transfer) a handoff. */
+/**
+ * Thin wrapper over claims_handoff — requests (does not immediately
+ * transfer) a handoff. Asserts `from`/`to` share a company before building
+ * the composite issueId — without this, a caller-mismatched `to` (e.g.
+ * `deps.approver`/`deps.handoffTo` in `applyApprovalTransition`, which are
+ * NOT independently companyId-checked at that call site — a real,
+ * pre-existing gap, unrelated to this fix, not fixed here since it's out
+ * of Finding 1's scope) would silently scope the composite key to `from`'s
+ * company while `to`'s own claimant string is for a different company's
+ * OrgMember — confusing, not obviously exploitable given the OTHER guards
+ * already in front of this call, but a correctness footgun this fix
+ * shouldn't introduce.
+ */
 export async function handoffClaim(
   issueId: string,
   from: OrgMember,
@@ -198,9 +273,21 @@ export async function handoffClaim(
   opts?: { reason?: string; progress?: number },
   config?: AgentDbAdapterConfig,
 ): Promise<void> {
+  if (from.companyId !== to.companyId) {
+    throw new ClaimAuthorizationError(
+      `handoffClaim: 'from' (${from.id}, company '${from.companyId}') and 'to' (${to.id}, company ` +
+        `'${to.companyId}') belong to different companies — a claim cannot be handed off across companies`,
+    );
+  }
   const result = await callTool<ClaimsMutationResult>(
     'claims_handoff',
-    { issueId, from: orgMemberClaimant(from), to: orgMemberClaimant(to), reason: opts?.reason, progress: opts?.progress },
+    {
+      issueId: claimIssueId(from.companyId, issueId),
+      from: orgMemberClaimant(from),
+      to: orgMemberClaimant(to),
+      reason: opts?.reason,
+      progress: opts?.progress,
+    },
     config,
   );
   if (result.success === false) {
@@ -218,7 +305,7 @@ export async function acceptClaimHandoff(
 ): Promise<void> {
   const result = await callTool<ClaimsMutationResult>(
     'claims_accept-handoff',
-    { issueId, claimant: orgMemberClaimant(actor) },
+    { issueId: claimIssueId(actor.companyId, issueId), claimant: orgMemberClaimant(actor) },
     config,
   );
   if (result.success === false) {

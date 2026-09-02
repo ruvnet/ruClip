@@ -94,7 +94,10 @@ function baseTransition(overrides: Partial<ApprovalTransition> = {}): ApprovalTr
 function activeClaimFor(actor: OrgMember, issueId: string) {
   return () => ({
     success: true,
-    claims: [{ issueId, claimant: { type: actor.kind, agentId: actor.id, agentType: actor.role, userId: actor.id, name: actor.role }, status: 'active' }],
+    // Cross-tenant claim collision fix (ruvnet/ruClip#5 Finding 1) —
+    // claims-authorization.ts now sends/compares a company-prefixed
+    // issueId, not the bare one.
+    claims: [{ issueId: `${actor.companyId}:${issueId}`, claimant: { type: actor.kind, agentId: actor.id, agentType: actor.role, userId: actor.id, name: actor.role }, status: 'active' }],
   });
 }
 

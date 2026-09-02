@@ -162,7 +162,7 @@ test(
       'agentdb_causal-edge': () => ({ success: true }),
       'claims_list': (args) =>
         args.claimant === 'agent:om-approver:Engineer'
-          ? { success: true, claims: [{ issueId: 'issue-1', claimant: { type: 'agent', agentId: 'om-approver', agentType: 'Engineer' }, status: 'active' }] }
+          ? { success: true, claims: [{ issueId: 'co-1:issue-1', claimant: { type: 'agent', agentId: 'om-approver', agentType: 'Engineer' }, status: 'active' }] }
           : { success: true, claims: [] },
     });
 
@@ -245,7 +245,9 @@ test(
         if (claim.claimant !== args.claimant) return { success: true, claims: [] };
         const [type, id, label] = (claim.claimant as string).split(':');
         const claimant = type === 'human' ? { type, userId: id, name: label } : { type, agentId: id, agentType: label };
-        return { success: true, claims: [{ issueId: 'issue-1', claimant, status: claim.status }] };
+        // Cross-tenant claim collision fix (ruvnet/ruClip#5 Finding 1) —
+        // company-prefixed, matching this test file's actors' companyId: 'co-1'.
+        return { success: true, claims: [{ issueId: 'co-1:issue-1', claimant, status: claim.status }] };
       },
       ...nonceMockHandlers(),
     });

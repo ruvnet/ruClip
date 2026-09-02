@@ -126,7 +126,10 @@ function baseSchedule(overrides: Partial<HeartbeatSchedule> = {}): HeartbeatSche
 function activeClaimFor(actor: OrgMember, issueId: string) {
   return () => ({
     success: true,
-    claims: [{ issueId, claimant: { type: 'agent', agentId: actor.id, agentType: actor.role }, status: 'active' }],
+    // Cross-tenant claim collision fix (ruvnet/ruClip#5 Finding 1) —
+    // claims-authorization.ts now sends/compares a company-prefixed
+    // issueId, not the bare one.
+    claims: [{ issueId: `${actor.companyId}:${issueId}`, claimant: { type: 'agent', agentId: actor.id, agentType: actor.role }, status: 'active' }],
   });
 }
 
