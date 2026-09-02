@@ -658,6 +658,38 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
      relying on it falling out of other checks, mirroring
      `applyApprovalTransition`'s equivalent explicit check. 209 tests total
      (up from 207), `tsc --strict` clean.
+   - **Human credential issuance — first slice delivered
+     (`docs/design/HUMAN-CREDENTIAL-ISSUANCE.md`,
+     `src/control-plane/authorization/human-identity-attestation.ts`)**:
+     the human-issuance gap this Phase 2 entry names above as a hard
+     prerequisite now has a real primitive, not just a named gap.
+     `HumanIdentityAttestation` (a short-lived, signed statement from an
+     external attester that a human's identity has already been verified —
+     shaped to carry a Cognitum Slack `user_id` via `identityRef`, per
+     `cognitum-one/slack` ADR-0002/ADR-0015, though this module imports
+     nothing from that repo) + `mintHumanActorCredential` (verifies the
+     attestation, cross-checks it against the persisted OrgMember's own
+     `identityRef`, then mints via the SAME durable-issuer-key
+     `mintActorCredential` agent issuance already uses) is the human
+     analogue of this Phase 2 entry's own agent-issuance anchor
+     (`claims_accept-handoff` succeeding). `resolveVerifiedActor`
+     (`actor-credential.ts`) now authorizes a `kind: 'human'` actor
+     specifically when its credential carries the AgentDB-backed provenance
+     marker `mintHumanActorCredential` writes — every other `kind: 'human'`
+     credential (including one minted directly via the existing, unchanged
+     `mintActorCredential`) stays blocked exactly as this Phase 2 entry's
+     original decision locked down, confirmed by a regression test, not
+     assumed. Full pipeline confirmed end to end: a human OrgMember can now
+     actually call `applyApprovalTransition` to approve an issue, real
+     `radio-moe` signing/verification throughout. **Still open**: no
+     producer of a `HumanIdentityAttestation` exists yet — no login/
+     dashboard flow calls this new mint function, so this narrows Phase 2's
+     remaining prerequisite to "produce one signed statement" rather than
+     "solve human authentication from scratch"; `setInteractionProfileConsent`'s
+     residual `actor.id` forgery risk (§4's narrowed exception, above) is
+     unchanged, deliberately out of this slice's scope. 222 tests total (up
+     from 209), `tsc --strict` clean, verified against the real installed
+     `radio-moe@0.3.1` end to end.
 4. **Phase 3 — ruclip-metaharness**: build-time bench suite, `score`/`genome`
    gates against the ruClip codebase. **Amended 2026-09-01**: no longer
    includes a runtime bench suite, `redblue`, or `flywheel` — that scope moved
