@@ -1,0 +1,69 @@
+{
+  "repo": "ruvnet/ruClip",
+  "cron": "17 8 * * *",
+  "slots": [
+    {
+      "deep": "correctness",
+      "scan": [
+        "performance",
+        "tests"
+      ]
+    },
+    {
+      "deep": "security",
+      "scan": [
+        "dependencies",
+        "secrets"
+      ]
+    },
+    {
+      "deep": "architecture",
+      "scan": [
+        "docs",
+        "api"
+      ]
+    },
+    {
+      "deep": "performance",
+      "scan": [
+        "memory",
+        "latency"
+      ]
+    },
+    {
+      "deep": "developer-experience",
+      "scan": [
+        "ci",
+        "tooling"
+      ]
+    }
+  ],
+  "bonusModuli": {
+    "25": "roadmap-review"
+  },
+  "controlPlaneProbes": [
+    "npm run --silent 2>/dev/null || true",
+    "ls package.json && cat package.json | head -40"
+  ],
+  "buildStep": {
+    "cmd": "npm ci && npm run build",
+    "degradeOnWasmFailure": true
+  },
+  "evaluatorEntrypoints": {
+    "bench": "npm test"
+  },
+  "adrConvention": {
+    "dir": "docs/adr",
+    "pad": 4
+  },
+  "competitors": [
+    "paperclipai/paperclip"
+  ],
+  "ledgerPath": "docs/dream-cycle/LEDGER.md",
+  "branchPrefix": "dream/",
+  "labels": [
+    "dream-cycle",
+    "research"
+  ],
+  "autoMerge": false
+}
