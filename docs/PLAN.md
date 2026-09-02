@@ -1736,6 +1736,63 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
 
 ## 9. Open items carried forward (not blocking, tracked)
 
+- **Benchmark/optimize investigation (2026-09-02, architect)** — item 10's
+  standing "benchmark/optimize each phase" instruction, applied
+  retroactively now that the forged-token security incident is fully
+  resolved. Measured, not guessed:
+  - **`npm run harness:score`/`harness:genome` re-run** (last measured at
+    `harnessFit: 72, taskCoverage: 79, toolSafety: 100` per Phase 3's
+    delivery note): now `harnessFit: 76, taskCoverage: 100, toolSafety:
+    100, memoryUsefulness: 38, hardConstraints: 6/6`; genome
+    `risk_score: 0.135, test_confidence: 0.8, publish_readiness: 0.9`. Real
+    improvement, not drift — worth the periodic re-check, since a
+    regression here would have meant something concrete (the score is a
+    build-time governance gate, not a vanity metric).
+  - **AgentDB adapter hot paths are network/IPC-bound, not CPU-bound** —
+    every `recallX`/`listXForCompany`/`graphNeighbors` call in
+    `store/agentdb-adapter.ts` is a thin wrapper over one `callTool` round
+    trip to the ruflo MCP bridge process; there is no significant
+    in-process computation to benchmark independently of that round trip.
+    This reframes what "benchmark the hot paths" can usefully mean here:
+    round-trip COUNT, not CPU profiling, is the real lever.
+  - **Real, measured inefficiency found**: wrote a throwaway benchmark
+    (mock-bridge call-counting, not a real network) against
+    `buildDashboardSnapshot` (`dashboard/build-snapshot.ts`) with a
+    realistic small-company shape (5 goals × 6 issues = 30 issues, 4 org
+    members — issues/goals naturally repeat assignees at this scale).
+    Measured: **199 total AgentDB round trips to assemble one snapshot**,
+    of which **65 are `recallOrgMember` calls for only 4 distinct
+    members — 61 (94%) are pure duplicates** of a call already made
+    earlier in the same snapshot build. `resolveOrgMemberRef` (that file's
+    own helper) has no per-build memoization; `Promise.all` makes this
+    concurrent (bounds wall-clock) but does nothing about the round-trip
+    COUNT, which is what a rate-limited or latency-sensitive bridge would
+    actually feel. Separately, but not itself waste: `listIssuesForGoal`/
+    `listHeartbeatsForCompany` each scan two tiers (`working`+`episodic`)
+    per call — a real 2x multiplier, but a deliberate, already-documented
+    design trade-off from those functions' own headers, not something to
+    silently change.
+  - **Recommended, not yet done**: memoize `resolveOrgMemberRef` within one
+    `buildDashboardSnapshot` call (a plain `Map<orgMemberId, Promise<...>>`
+    threaded through `buildGoalSnapshot`/`buildIssueSnapshot`, same
+    per-call-scoped-cache shape already used elsewhere in this codebase,
+    e.g. `identity-map.ts`'s TTL cache) — correctness-preserving (same
+    output), no schema/behavior change, would cut this example's
+    `recallOrgMember` calls from 65 to 4. Scoped small enough that it
+    likely doesn't need the full tester→security→reviewer weight recent
+    security work required — flagged to team-lead for a pipeline-weight
+    call before implementing, not started unilaterally.
+  - **`ruclip-metaharness`'s `.harness/bench.json` (Phase 3) stays
+    correctness-only** — read all 6 tasks directly: every
+    `successCriteria` is a pass/fail test outcome (`npm test` or a scoped
+    test file), `timeoutMs`/`maxCostUsd` are budget/timeout guards, not
+    performance assertions. No latency/throughput task exists today.
+    Recommendation: don't add one yet — there's no real deployed traffic
+    pattern to write a meaningful performance task against (the dashboard
+    snapshot is republished periodically, not served live; the attester
+    service isn't live yet either), and a synthetic perf task risks
+    encoding the WRONG target. Revisit once either ships a real,
+    live-measurable request path.
 - **Fixed 2026-09-02 (`scripts/run-tests.mjs`)**: `.github/workflows/ci.yml`
   pins `node-version: 20`, but `package.json`'s `test` script passed a
   quoted glob (`"dist/**/*.test.js"`) directly to `node --test` — glob
