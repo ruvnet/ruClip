@@ -848,6 +848,29 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        — cheap, orthogonal, catches a real regression class, worth doing
        regardless of the IAP timeline. Net: no #1, build #2, real fix is
        IAP pending team-lead's infra decision.
+     - **Team-lead authorized IAP, sequenced in two steps (2026-09-02)**:
+       (1) code first, through the full pipeline — verify
+       `x-goog-iap-jwt-assertion` (issuer `https://cloud.google.com/iap`,
+       audience `/projects/{PROJECT_NUMBER}/locations/{REGION}/services/{SERVICE_NAME}`,
+       ES256 against IAP's published keys, `verifySignedJwtWithCertsAsync`)
+       — **replacing**, not sitting alongside, the current decode-without-
+       verify approach, since IAP gives a genuinely verifiable signature
+       and the whole point is to stop trusting an unverifiable channel;
+       explicit instruction to have the coder independently verify against
+       the actual installed library source (not trust the docs' code
+       sample blindly), same discipline that found the original redaction
+       bug. (2) Deploy second, once code is ready and reviewed — enabling
+       IAP on the live service (granting IAP's service agent
+       `roles/run.invoker`, granting real users
+       `roles/iap.httpsResourceAccessor`) is real infra change, routed the
+       same way as the original deployment and the SA work — a dedicated
+       task, empirically verified against the live service, reported back
+       for the audit trail. Explicit ordering constraint: do not enable
+       IAP on the live service before the code side can actually verify
+       its header — a half-migrated state would break the service. **Hard
+       gate, unchanged**: the identity-mapping secret stays empty until
+       this is verified working end-to-end on the live service, not just
+       in code review. Routed to `ruclip-coder`.
    - The prerequisite bullets below (added 2026-09-01/02) describe exactly
      why 2b is needed — they remain accurate.
 
