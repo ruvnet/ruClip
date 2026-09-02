@@ -873,6 +873,34 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
    from `ruclip-metaharness`'s build-time genome and from dream-machine's
    nightly repo-evolution loop (Phase 5 below), which it complements rather
    than duplicates.
+   - **Design delivered 2026-09-02** (`docs/design/AUTOGENOUS-RUNTIME-GOVERNANCE.md`):
+     grounded directly in the real `ruvnet/autogenous` repo (`gh api`, real
+     Rust source, not README prose) — confirmed no npm/WASM binding exists,
+     but the repo ships a real, complete HTTP service
+     (`crates/service`/`autogenous-service`) implementing the actual
+     admission/canary/promotion API, purpose-built for exactly this Cloud
+     Run deployment pattern. Team-lead authorized the real deployment to
+     `ruv-dev` in parallel (separate from this design work). Every request/
+     response type in the design doc is read from the real handler source
+     and struct definitions, not assumed — including one real, non-obvious
+     nuance: `/v1/agl/admit`'s `error`/`reason` fields are Rust `Debug`-
+     formatted strings, not the `AdmissionError` type's own JSON
+     serialization, so `error` uses PascalCase variant names while every
+     other field on this API is snake_case. **v1 scope is deliberately
+     narrow**: only `/v1/agl/admit`, `/v1/agl/fitness`, `/v1/canary/new`,
+     `/v1/canary/observe` are wired — `/v1/promote`/`/v1/judges/evaluate`
+     need a `Constitution` document (a governance decision, not a code
+     task) and are scoped to Phase 4b. ruClip proposes only narrow,
+     `auto_reversible`-authority, `routing_budget`-scoped configuration
+     mutations (e.g. tightening a budget threshold after a repeated alert
+     pattern) — never code, security-policy, or schema mutations. A
+     mutation is never applied to `Company.budget` until a real
+     `/v1/promote` success returns a signature (Phase 4b) — reaching
+     `ReadyForPromotion` at 100% canary is where this slice's scope stops,
+     matching "evaluation is not promotion" throughout this project.
+     `CanaryController.audit` (the service's own signed audit log) is
+     persisted verbatim into a new `AutogenousMutationRecord`, rather than
+     ruClip inventing a parallel witness mechanism.
 6. **Phase 5 — Dream-machine nightly integration**: config + `/schedule`
    routine, first ledger rows. **Amended 2026-09-01**: rotation surface is
    codebase-only (§6) — no runtime `redblue` rotation here, that's Phase 4's
