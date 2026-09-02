@@ -775,6 +775,19 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        permissions piecemeal. Flagged to architect/team-lead; once granted,
        the remaining end-to-end check (mapping hit → real 200 with a signed
        attestation) can complete in a follow-up round.
+     - **Architect independently verified (2026-09-02)**: re-ran `tsc
+       --strict` and the full suite myself rather than trusting the
+       reported numbers — 300/300, clean. Read every changed file
+       (`attest-handler.ts`, `google-token.ts`, `identity-map.ts`,
+       `signing-key.ts`, the `Dockerfile`, `package.json`) and confirmed
+       `credential-issuer.ts`/`human-identity-attestation.ts` are
+       genuinely untouched (empty diff). Design doc corrected to match
+       (`docs/design/HUMAN-CREDENTIAL-ISSUANCE-PRODUCER.md`, commit
+       `ad4b450`) — both the signature-redaction finding and the
+       gcloud-CLI-unavailable-in-container finding were gaps in the
+       original design's own assumptions, not coder oversights; recorded
+       as such rather than left implicit. Routed to `ruclip-tester` again
+       given this touches the auth verification path directly.
    - The prerequisite bullets below (added 2026-09-01/02) describe exactly
      why 2b is needed — they remain accurate.
 
