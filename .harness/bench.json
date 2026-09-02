@@ -1,0 +1,206 @@
+{
+  "id": "repo-native",
+  "version": "0.1.0",
+  "createdAt": "2026-09-02T00:44:21.338Z",
+  "taskHash": "840fd8d2d6980c05657eef47034be902866c58868617f34e86ecacf8dde8ac1d",
+  "tasks": [
+    {
+      "id": "task-0001",
+      "repo": "/Users/cohen/Projects/ruClip",
+      "commit": "WORKDIR",
+      "title": "Repo native smoke task",
+      "prompt": "Keep the repository test suite green.",
+      "publicTestCommand": "npm test",
+      "hiddenTestCommand": "npm test",
+      "regressionTestCommand": "npm test",
+      "timeoutMs": 300000,
+      "maxCostUsd": 2,
+      "allowedMutationFiles": [],
+      "blockedFiles": [
+        ".env",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        ".github/workflows"
+      ],
+      "successCriteria": [
+        "public test passes",
+        "hidden test passes",
+        "regression suite passes"
+      ],
+      "difficulty": 1,
+      "tags": [
+        "smoke",
+        "repo-native"
+      ]
+    },
+    {
+      "id": "task-0002",
+      "repo": "/Users/cohen/Projects/ruClip",
+      "commit": "WORKDIR",
+      "title": "Approval-gate state machine and self-approval invariant hold",
+      "prompt": "A candidate change must never allow an Issue's approvalState to move outside the draft->pending->approved|rejected->draft table (APPROVAL-GATE.md), and must never allow an actor to approve or reject a submission they authored themselves.",
+      "publicTestCommand": "npm run build && node --test --test-reporter=spec \"dist/tests/control-plane/approval-gate.test.js\"",
+      "hiddenTestCommand": "npm run build && node --test --test-reporter=spec \"dist/tests/control-plane/approval-gate.test.js\" \"dist/tests/control-plane/approval-transitions.test.js\" \"dist/tests/control-plane/approval-transition-validation.test.js\"",
+      "regressionTestCommand": "npm test",
+      "timeoutMs": 300000,
+      "maxCostUsd": 2,
+      "allowedMutationFiles": [
+        "src/control-plane/approval/**",
+        "src/control-plane/store/agentdb-adapter.ts"
+      ],
+      "blockedFiles": [
+        ".env",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        ".github/workflows"
+      ],
+      "successCriteria": [
+        "public test passes",
+        "hidden test passes",
+        "regression suite passes"
+      ],
+      "difficulty": 3,
+      "tags": [
+        "approval-gate",
+        "self-approval",
+        "governance"
+      ]
+    },
+    {
+      "id": "task-0003",
+      "repo": "/Users/cohen/Projects/ruClip",
+      "commit": "WORKDIR",
+      "title": "Budget hard-stop correctness (Guard B) holds",
+      "prompt": "A candidate change must never allow Issue.budgetImpact to change once the stored issue's approvalState has left 'draft' -- see APPROVAL-GATE.md Guard B.",
+      "publicTestCommand": "npm run build && node --test --test-reporter=spec \"dist/tests/control-plane/approval-gate.test.js\"",
+      "hiddenTestCommand": "npm run build && node --test --test-reporter=spec \"dist/tests/control-plane/approval-gate.test.js\" \"dist/tests/control-plane/heartbeats-and-comms.test.js\"",
+      "regressionTestCommand": "npm test",
+      "timeoutMs": 300000,
+      "maxCostUsd": 2,
+      "allowedMutationFiles": [
+        "src/control-plane/store/agentdb-adapter.ts",
+        "src/control-plane/heartbeat/**"
+      ],
+      "blockedFiles": [
+        ".env",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        ".github/workflows"
+      ],
+      "successCriteria": [
+        "public test passes",
+        "hidden test passes",
+        "regression suite passes"
+      ],
+      "difficulty": 3,
+      "tags": [
+        "budget",
+        "hard-stop",
+        "governance"
+      ]
+    },
+    {
+      "id": "task-0004",
+      "repo": "/Users/cohen/Projects/ruClip",
+      "commit": "WORKDIR",
+      "title": "Actor identity forgery stays closed",
+      "prompt": "A candidate change must never allow a caller to attribute an approval decision, comms-room registration, or heartbeat action to an OrgMember other than the one whose ActorCredential was actually verified -- see ACTOR-IDENTITY-VERIFICATION.md.",
+      "publicTestCommand": "npm run build && node --test --test-reporter=spec \"dist/tests/control-plane/actor-identity-verification.test.js\"",
+      "hiddenTestCommand": "npm run build && node --test --test-reporter=spec \"dist/tests/control-plane/actor-identity-verification.test.js\" \"dist/tests/control-plane/actor-credential-authorization-gaps.test.js\" \"dist/tests/control-plane/claims-authorization.test.js\" \"dist/tests/control-plane/authorization-trust-boundary.test.js\"",
+      "regressionTestCommand": "npm test",
+      "timeoutMs": 300000,
+      "maxCostUsd": 2,
+      "allowedMutationFiles": [
+        "src/control-plane/authorization/**"
+      ],
+      "blockedFiles": [
+        ".env",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        ".github/workflows"
+      ],
+      "successCriteria": [
+        "public test passes",
+        "hidden test passes",
+        "regression suite passes"
+      ],
+      "difficulty": 4,
+      "tags": [
+        "actor-identity",
+        "forgery",
+        "governance"
+      ]
+    },
+    {
+      "id": "task-0005",
+      "repo": "/Users/cohen/Projects/ruClip",
+      "commit": "WORKDIR",
+      "title": "Budget-gated heartbeats and agentbbs delivery hold",
+      "prompt": "A candidate change must never let a heartbeat wake its assignee while either budget gate (application or operating) is blocked, and agentbbs notification signing/delivery must degrade gracefully rather than throw when the optional dependency is absent -- see HEARTBEATS-AND-COMMS.md.",
+      "publicTestCommand": "npm run build && node --test --test-reporter=spec \"dist/tests/control-plane/heartbeats-and-comms.test.js\"",
+      "hiddenTestCommand": "npm run build && node --test --test-reporter=spec \"dist/tests/control-plane/heartbeats-and-comms.test.js\" \"dist/tests/control-plane/heartbeats-authorization-gaps.test.js\" \"dist/tests/control-plane/agentradio-signing-gaps.test.js\"",
+      "regressionTestCommand": "npm test",
+      "timeoutMs": 300000,
+      "maxCostUsd": 2,
+      "allowedMutationFiles": [
+        "src/control-plane/heartbeat/**",
+        "src/control-plane/comms/**"
+      ],
+      "blockedFiles": [
+        ".env",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        ".github/workflows"
+      ],
+      "successCriteria": [
+        "public test passes",
+        "hidden test passes",
+        "regression suite passes"
+      ],
+      "difficulty": 3,
+      "tags": [
+        "heartbeats",
+        "agentbbs",
+        "governance"
+      ]
+    },
+    {
+      "id": "task-0006",
+      "repo": "/Users/cohen/Projects/ruClip",
+      "commit": "WORKDIR",
+      "title": "EmployeeInteractionProfile access-control boundary holds",
+      "prompt": "A candidate change must never introduce a read path that lets one OrgMember read another OrgMember's EmployeeInteractionProfile -- self-read and internal-composition-only reads are the only two paths that may exist -- see ACTOR-IDENTITY-VERIFICATION.md Section 4's narrowed exception and EMPLOYEE-INTERACTION-PROFILE.md Section 2.",
+      "publicTestCommand": "npm run build && node --test --test-reporter=spec \"dist/tests/control-plane/employee-interaction-profile.test.js\"",
+      "hiddenTestCommand": "npm run build && node --test --test-reporter=spec \"dist/tests/control-plane/employee-interaction-profile.test.js\" \"dist/tests/control-plane/employee-profile-access-control-gaps.test.js\"",
+      "regressionTestCommand": "npm test",
+      "timeoutMs": 300000,
+      "maxCostUsd": 2,
+      "allowedMutationFiles": [
+        "src/control-plane/employee-augmentation/**"
+      ],
+      "blockedFiles": [
+        ".env",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        ".github/workflows"
+      ],
+      "successCriteria": [
+        "public test passes",
+        "hidden test passes",
+        "regression suite passes"
+      ],
+      "difficulty": 3,
+      "tags": [
+        "employee-interaction-profile",
+        "access-control",
+        "governance"
+      ]
+    }
+  ]
+}
