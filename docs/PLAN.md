@@ -647,6 +647,30 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        fixtures from `tests/support/actor-credential-fixture.ts` (already
        shipped for `human-identity-attestation.test.ts`) rather than
        building parallel ones.
+   - **Review pipeline complete (2026-09-01)**: architect independently
+     re-ran `tsc --strict` and the real suite (not just trusting the
+     coder's numbers) — 291/291, clean. `ruclip-tester` did a full
+     independent pass and confirmed the identity-mapping write-boundary is
+     structurally absent (no write function anywhere, no route that could
+     reach one), not merely conventionally enforced — the load-bearing
+     claim for this whole phase. `ruclip-security` reviewed the two items
+     flagged for explicit judgment: (1) `google-token.ts`'s deliberate
+     audience-claim omission — confirmed safe, since a bare
+     `gcloud auth print-identity-token`'s `aud` is a constant identical
+     regardless of which service is called, so checking it provides no
+     discriminating security value; Cloud Run's own per-service IAM invoker
+     check is the real boundary. (2) `ruclip login` printing the raw
+     `ActorCredential` to stdout — accepted as the right default (matches
+     `gcloud`'s own `print-identity-token`/`print-access-token` convention,
+     bounded by the credential's 15-min TTL + single-use nonce), with one
+     small hardening landed: a stderr warning immediately before the
+     credential JSON (commit `b48e079`), addressing the practical risk the
+     TTL/nonce don't bound — terminal scrollback/screen-share/shell-history
+     exposure for an interactive human, not scripted capture. Re-verified
+     291/291 and `tsc --strict` clean after that fix. No blocking findings
+     at any stage. Design-doc correction from the implementation stage
+     (§4 step 2's audience-check assumption) recorded in commit `bf38d56`.
+     Handed to `ruclip-reviewer` for final sign-off.
    - The prerequisite bullets below (added 2026-09-01/02) describe exactly
      why 2b is needed — they remain accurate.
 
