@@ -572,7 +572,9 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
      2a's design.
    - The prerequisite bullets below (added 2026-09-01/02) describe exactly
      why 2b is needed — they remain accurate, now attributed to 2b
-     specifically rather than "Phase 2" undifferentiated. `ActorCredential` verification (the
+     specifically rather than "Phase 2" undifferentiated.
+
+   `ActorCredential` verification (the
    cross-cutting fix for the actor-forgery gap security found — closes it
    for agent `OrgMember`s via a fresh, per-call, cryptographically-signed
    credential) has no working issuance path for `kind: 'human'` actors —
@@ -1055,6 +1057,22 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
   scripts with (an unquoted glob would depend on bash's globstar, which dash
   doesn't support). Verified a genuinely failing test still exits non-zero
   through the new script before committing.
+- **Reconciled 2026-09-02 (post-merge, team-lead)**: an external PR (#3,
+  from the same Cognitum-integration team as PR #2) independently found the
+  same underlying Node-version CI failure and fixed it differently — bumped
+  `.github/workflows/ci.yml`'s runner to `node-version: 22`, deliberately
+  leaving `package.json`'s `engines.node ">=20"` claim untouched. Reasoned,
+  but it means CI stops verifying that `>=20` claim at all. Merging
+  `origin/main` brought that change in alongside `scripts/run-tests.mjs`
+  above; since our fix makes Node 20 CI pass correctly on its own merits
+  (confirmed on both 20.20.2 and 22.22.1, not assumed), `node-version: 20`
+  was restored in the merge rather than keeping their `22` — this is not an
+  arbitrary override of a good-faith external contribution, it's that our
+  fix (built after theirs, with the benefit of already having root-caused
+  the failure more thoroughly) makes their tradeoff unnecessary and
+  restores real `>=20` verification. Recorded here per team-lead's explicit
+  instruction, so the reasoning behind reverting part of an external PR
+  during the merge is visible, not silent.
 - `ruvector@0.2.25` pin vs. registry `0.3.0` drift — pre-existing, unrelated
   to ruClip, worth a separate fix.
 - "Animated scrollyteller parallax narrative" from the mission brief maps to
