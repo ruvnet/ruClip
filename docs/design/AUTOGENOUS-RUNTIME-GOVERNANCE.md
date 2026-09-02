@@ -371,28 +371,52 @@ Concretely:
   candidate simply waits, visible in the audit trail (§6), for a human or
   a later slice to finish the loop — never auto-applied.
 
-**Known limitation, found by live-testing the real service, escalated not
-silently patched (2026-09-02)**: `FitnessVector.rollback_verified` is a
-real, binary hard gate server-side — confirmed by an A/B test against the
-live service (identical fitness otherwise; `false` → immediate
-`RollBack`, `true` → `Advance`). It means *"has a rollback been executed
-successfully in the target environment,"* and this v1 flow's own
-`fitnessFromBudgetLevel()` honestly reports `false` (never fabricated
-true) because **nothing is ever actually applied to `Company.budget` in
-v1's scope** — the bullet immediately above this one. The practical
-consequence: v1's canary loop can currently observe and record, but can
-never reach `Advance`, let alone `ReadyForPromotion` — this is the
-*correct* consequence of an honest `rollback_verified: false`, not a bug
-to silently patch with a hardcoded `true` (which would be reporting a
-verification that never happened). It also surfaces a real tension in
-this section's own design: Autogenous's staged-canary model implies
-*something* is genuinely, partially live during 1%→10%→50%→100% — which
-v1's "nothing applied until `/v1/promote`" framing doesn't provide a
-target for. Resolving this (a real, safe, executed rollback-verification
-step likely requires applying the mutation at some canary stage, not only
-at final promotion) is a genuine design decision about mutation-application
-semantics, not a one-line fix — escalated to team-lead rather than decided
-here. Tracked as an open item until resolved.
+**Decided (2026-09-02, team-lead), not just a known limitation**:
+`FitnessVector.rollback_verified` is a real, binary hard gate
+server-side — confirmed by an A/B test against the live service (identical
+fitness otherwise; `false` → immediate `RollBack`, `true` → `Advance`).
+It means *"has a rollback been executed successfully in the target
+environment,"* and this v1 flow's own `fitnessFromBudgetLevel()` honestly
+reports `false` (never fabricated true) because **nothing is ever
+actually applied to `Company.budget` in v1's scope** — the bullet
+immediately above this one. The practical consequence: v1's canary loop
+observes and records real evidence, but plateaus at 1% and never reaches
+`Advance` or `ReadyForPromotion`.
+
+**This is the system working correctly, not a bug — and it is v1's
+*intended*, reported outcome, not a silent side effect.** Applying a real
+mutation to live `Company.budget` before Phase 4b's `Constitution`/
+authorization framework exists to govern who may do that would mean
+exercising authority ahead of its own governance — exactly backwards from
+every other pattern this project holds (the approval-gate, `claims_*`
+authorization, `ActorCredential`'s fail-closed defaults, dream-machine's
+own evaluation-is-not-promotion discipline). The coder refusing to
+fabricate `rollback_verified: true` was correct.
+
+**Report the plateau explicitly — don't let it be an implicit fact
+someone has to notice later.** After `N` observations at 1% with
+`rollback_verified` honestly `false`, this should read as v1's natural
+ceiling having been reached — functionally an `INCONCLUSIVE`-shaped
+outcome in dream-machine's own sense
+(`docs/design/DREAM-MACHINE-INTEGRATION.md`'s PROMPT.md: *"A rejected
+hypothesis with a clean measurement is a successful night"*): real
+evidence gathered, no promotion possible yet, by design, not by failure.
+**No new code for this today** — `AutogenousMutationRecord.observations`
+(§6, already designed, already shipped) already carries every reading
+needed to recognize this pattern (repeated 1%-stage observations, each
+with `rollback_verified: false`). A future reporting surface (a query
+over this history, a dashboard rollup, or a `plateauReached`-shaped field
+on the record) is a natural, small follow-on whenever one is needed —
+noted here as the concrete direction, not built today, per team-lead's
+"no code changes needed for this decision itself."
+
+**Phase 4b's scope is now explicitly bundled, not two separate deferred
+half-decisions**: authoring a `Constitution` (who are ruClip's judges/
+controllers, what's `prohibited_effects`) *and* real mutation-application
++ rollback-verification (this section's option (b) from the original
+escalation) go together — "apply and verify a real mutation" is
+meaningless without first deciding who's authorized to govern it. One
+coherent Phase 4b scope, not a deferred half-measure.
 
 ## 5. Why this scope, not a broader one
 

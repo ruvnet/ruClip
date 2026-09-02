@@ -961,6 +961,28 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        rollback-verification step, or a different v1 scope entirely?), not
        a code bug to patch silently — reported to architect for a decision
        before touching `fitnessFromBudgetLevel()`.
+     - **Resolved 2026-09-02 (team-lead), not just flagged**: v1's canary
+       loop plateauing at 1% is **correct, intended v1 behavior**, not a
+       bug — applying a real mutation to live `Company.budget` before
+       Phase 4b's `Constitution`/authorization framework exists to govern
+       who may do that would mean exercising authority ahead of its own
+       governance, backwards from every other pattern this project holds
+       (approval-gate, `claims_*` authorization, `ActorCredential`'s
+       fail-closed defaults, dream-machine's own evaluation-is-not-
+       promotion discipline). `fitnessFromBudgetLevel()`'s honest
+       `rollback_verified: false` stays exactly as the coder wrote it — no
+       code change from this decision. The plateau is functionally an
+       `INCONCLUSIVE`-shaped outcome (dream-machine's own three-verdict
+       discipline): real evidence gathered, no promotion possible yet, by
+       design. `AutogenousMutationRecord.observations` (already shipped)
+       already carries every reading needed to recognize this pattern — a
+       future reporting surface over that history is a natural follow-on,
+       not built today. Real mutation-application + rollback-verification
+       (this finding's original open question) is now explicitly bundled
+       into Phase 4b alongside the `Constitution`/authorization decision —
+       one coherent scope, not two separate deferred half-decisions, since
+       "apply and verify a real mutation" is meaningless without first
+       deciding who's authorized to govern it.
      - **One live-testing correction to the design doc's own suggested
        verification command**: `gcloud auth print-identity-token
        --audiences=<baseUrl>` (§0's suggested command) **errors** for a
