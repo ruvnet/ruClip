@@ -656,6 +656,38 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
    routine, first ledger rows. **Amended 2026-09-01**: rotation surface is
    codebase-only (§6) — no runtime `redblue` rotation here, that's Phase 4's
    job now.
+   - **Delivered this iteration** (`docs/design/DREAM-MACHINE-INTEGRATION.md`,
+     commit `a30ceab` — docs+config only, no application code, so this
+     slice skipped straight from architect to reviewer): grounded in the
+     real, installed `dream-machine@0.1.1` package (tarball pulled and
+     `init`/`compile`/`schedule` actually run against this repo, not
+     assumed) — `dream.config.json` (root, matching `package.json`/
+     `tsconfig.json`'s existing convention), `docs/dream-cycle/PROMPT.md`
+     (compiled prompt mirror), and `docs/dream-cycle/routine.json` (the
+     `/schedule` payload). Two real defects in the generic scaffold were
+     found and corrected before committing, not silently accepted:
+     `adrConvention`'s string form hardcodes `docs/adrs/` (plural) — this
+     repo's real directory is `docs/adr/` (singular) — fixed via the
+     undocumented object form `{dir, pad}` found by reading `adrDir()` in
+     the bundled source directly; `competitors` defaulted to a generic
+     agent-framework list (LangGraph/AutoGen/CrewAI/…) irrelevant to
+     ruClip's actual domain, replaced with the one real comparison point
+     this project's own docs already name (`paperclipai/paperclip`).
+     `evaluatorEntrypoints.bench` is `npm test` today — Phase 3's
+     `ruclip-metaharness` bench suites and `security_bench`/`mcp_scan` are
+     explicitly deferred as future evaluator entries, not fabricated as
+     already wired. `autoMerge: false` and the routine's own compiled
+     prompt both carry the "evaluation is never promotion, never merges"
+     invariant this repo has held throughout (ADR-0001 §2, `AUTHORIZATION.md`
+     §4's promotion-gate language, `HEARTBEATS-AND-COMMS.md`'s fail-closed
+     discipline — same family of guarantee, applied here to nightly
+     research output instead of a runtime action).
+   - **Deliberately not invoked**: `routine.json`'s `environment_id` is left
+     as an explicit placeholder (`REPLACE_WITH_CLOUD_ENV_ID`) — registering
+     a live `/schedule` cloud cron routine is a different class of action
+     than committing a repo file (it starts a recurring, unattended,
+     budget-spending process against a real cloud environment) and is held
+     for team-lead's explicit go, not bundled into this docs+config commit.
 7. **Phase 6 (NEW, 2026-09-01) — Human Employee Augmentation**
    (see §7a above for the full design): per-person adaptive coaching for
    human `OrgMember`s via calendar/email/meeting-transcript signal
