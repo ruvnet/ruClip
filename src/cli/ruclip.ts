@@ -109,6 +109,21 @@ async function main(): Promise<void> {
       `Logged in as ${attestation.humanIdentityRef} (OrgMember ${credential.orgMemberId}, company ` +
         `${credential.companyId}). Credential expires at ${credential.expiresAt}.`,
     );
+    // Security note (security review round 10): the JSON on the next line
+    // IS a live, signed, actionable credential — bounded by a 15-minute TTL
+    // and a single-use replay nonce (ACTOR-IDENTITY-VERIFICATION.md §3), but
+    // usable by anyone who captures it within that window, exactly once,
+    // for whichever high-consequence action (approval decision, comms-room
+    // registration, heartbeat creation) the holding OrgMember is authorized
+    // for. Printed to stdout deliberately, matching this exact GCP
+    // ecosystem's own convention (gcloud auth print-identity-token/
+    // print-access-token do the same) so a wrapping script can capture it —
+    // this warning doesn't change that behavior, it only makes the
+    // sensitivity of an otherwise-ordinary-looking JSON blob unmistakable to
+    // a human running this interactively, where terminal scrollback/
+    // screen-share/shell-history exposure is the practical risk (not
+    // logging/CI capture, which the TTL+nonce already bound).
+    console.error('WARNING: the following is a live, single-use ActorCredential — do not share or log this output.');
     console.log(JSON.stringify(credential));
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
