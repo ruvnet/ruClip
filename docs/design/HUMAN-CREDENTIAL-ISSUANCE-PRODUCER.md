@@ -239,18 +239,32 @@ Handler steps:
 
 1. Extract the bearer token from `Authorization`.
 2. **Independently verify it against Google's own JWKS** (signature,
-   `iss === accounts.google.com` or `https://accounts.google.com`, `aud`
-   matches this service's own OAuth client/service context, not expired).
-   This is a deliberate second check, not redundant with Cloud Run's own
-   platform-level IAM invoker check from §3.1: Cloud Run's IAM decision
-   answers "is this caller authorized to invoke the service," but the
-   caller's actual identity claims (the `email` field specifically) are
-   only available to the app if it independently decodes/verifies the same
-   token itself — **flagged for the coder to confirm empirically against
-   the real deployed service** (same discipline `autogenous-client.ts`'s
-   header comment used to correct the `--audiences` assumption in §0.3),
-   since this is standard, documented Cloud Run/OIDC behavior but has not
-   been directly tested in this session.
+   issuer, expiry). This is a deliberate second check, not redundant with
+   Cloud Run's own platform-level IAM invoker check from §3.1: Cloud Run's
+   IAM decision answers "is this caller authorized to invoke the service,"
+   but the caller's actual identity claims (the `email` field specifically)
+   are only available to the app if it independently decodes/verifies the
+   same token itself — **flagged for the coder to confirm empirically
+   against the real deployed service** (same discipline
+   `autogenous-client.ts`'s header comment used to correct the
+   `--audiences` assumption in §0.3), since this is standard, documented
+   Cloud Run/OIDC behavior but had not been directly tested when this
+   section was first written.
+   - **Correction (implementation, 2026-09-01)**: this step's original text
+     said `aud` should be checked against "this service's own OAuth
+     client/service context." That is not achievable with the bare
+     `gcloud auth print-identity-token` command §0.3/§5 both specify: the
+     coder found, by reading `google-auth-library`'s real source, that
+     such a token's `aud` claim is Google's own fixed gcloud-CLI OAuth
+     client id, not this service's URL — requiring it would reject every
+     real login. `google-token.ts` deliberately omits the `audience` check
+     for this reason, relying on Cloud Run's own IAM invoker check (§3.1)
+     as the actual per-service authorization boundary; this layer's job is
+     narrowed to "extract a reliable, signature-verified `email` claim from
+     an already-Cloud-Run-authorized request." Consistent with the
+     `--audiences` finding already established for `autogenous-client.ts`
+     — not a new risk, the same trade-off already accepted for that
+     service.
 3. Require `email_verified === true` on the token's claims (mirrors
    `cognitum-one/slack`'s own cited discipline of requiring a *verified*
    mailbox, not just workspace membership).
