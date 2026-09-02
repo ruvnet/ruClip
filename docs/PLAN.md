@@ -788,6 +788,29 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        original design's own assumptions, not coder oversights; recorded
        as such rather than left implicit. Routed to `ruclip-tester` again
        given this touches the auth verification path directly.
+     - **`ruclip-tester` round-2 finding — single point of failure,
+       demonstrated not just described (commit `170309f`)**: answered the
+       architect's own review question ("is there any path where the
+       container receives a request that didn't pass Cloud Run's IAM
+       check") concretely — `RealGoogleIdTokenVerifier` checks only that a
+       third JWT segment EXISTS, never its content; a completely
+       fabricated token (never touched by Google, arbitrary third
+       segment) is accepted and mints a real, validly-signed
+       `HumanIdentityAttestation` for an attacker-chosen identity, proven
+       end to end through the real `handleAttestRequest` pipeline. This is
+       the honest, already-understood consequence of the decode-without-
+       verify design (§4 step 2's Correction #2), not a new code bug — but
+       it means the service's ENTIRE security model rests on one
+       infrastructure setting (`--no-allow-unauthenticated`) with zero
+       independent application-level backstop. Also confirmed the `exp`
+       defense-in-depth check is trivially bypassed by simply omitting
+       `exp` — exactly matching its own "not the real check" framing, no
+       overreach. 303 tests total (up from 300). Architect independently
+       re-ran `tsc --strict` and the full suite — confirmed clean. Handed
+       to `ruclip-security` for the explicit call on whether this warrants
+       an app-level or deploy-time mitigation, per the same escalation
+       discipline this project has used for every other genuinely
+       load-bearing security tradeoff.
    - The prerequisite bullets below (added 2026-09-01/02) describe exactly
      why 2b is needed — they remain accurate.
 
