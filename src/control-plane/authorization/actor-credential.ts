@@ -24,6 +24,16 @@
  * this specific mechanism, `package.json`'s `peerDependenciesMeta` marks it
  * `optional: false` — the notification channel's own, separate, best-effort
  * `radio-moe` usage is untouched and stays tolerant of it being absent.
+ *
+ * `kind: 'human'` OrgMembers — see `docs/design/HUMAN-CREDENTIAL-ISSUANCE.md`
+ * and `human-identity-attestation.ts`: `resolveVerifiedActor` below now
+ * authorizes a `kind: 'human'` OrgMember, but ONLY when its credential
+ * carries the AgentDB-backed provenance marker that `mintHumanActorCredential`
+ * writes after independently verifying a `HumanIdentityAttestation` from an
+ * admitted external attester. Every other `kind: 'human'` credential —
+ * including one minted directly via this file's own sibling
+ * `mintActorCredential` — stays blocked, matching
+ * ACTOR-IDENTITY-VERIFICATION.md §4's original fail-closed default exactly.
  */
 import { recallOrgMember, type AgentDbAdapterConfig } from '../store/agentdb-adapter.js';
 import type { OrgMember } from '../schema/org-member.js';
@@ -144,6 +154,33 @@ function credentialNonceKey(companyId: string, nonce: string): string {
 }
 
 /**
+ * Provenance marker for a human-issued `ActorCredential` — see
+ * `docs/design/HUMAN-CREDENTIAL-ISSUANCE.md`. `mintHumanActorCredential`
+ * (`human-identity-attestation.ts`) writes one of these, keyed by the
+ * FRESHLY-MINTED credential's own single-use nonce, immediately after it has
+ * verified a real `HumanIdentityAttestation` and minted the credential —
+ * never before, never for any other reason. `resolveVerifiedActor` below
+ * requires this marker to be present before authorizing a `kind: 'human'`
+ * OrgMember; a `kind: 'human'` credential minted any other way (there is no
+ * other sanctioned way — `mintActorCredential` alone never writes this
+ * marker) has no marker and stays blocked.
+ *
+ * Deliberately a SEPARATE namespace/key from `NONCE_NAMESPACE`'s own replay
+ * guard above — that guard tracks "has THIS credential been verified yet"
+ * (consumed by `verifyActorCredential`, single-use); this one tracks "was
+ * THIS credential's nonce ever blessed by the human-attestation path"
+ * (written once at mint time, read-only here, never consumed) — conflating
+ * the two would make the marker disappear the instant the credential is
+ * verified, which is exactly when `resolveVerifiedActor` needs to read it.
+ */
+export const HUMAN_ATTESTED_NAMESPACE = 'ruclip-human-attested-credentials';
+
+/** Exported so `human-identity-attestation.ts` can write the identical key this file reads — kept in one place, same discipline as `credentialNonceKey`/`actorCredentialFrame`. */
+export function humanAttestedCredentialMarkerKey(companyId: string, credentialNonce: string): string {
+  return `ruclip:company:${companyId}:human-attested-credential:${credentialNonce}`;
+}
+
+/**
  * Verifies `credential`, in order, throwing `ActorIdentityVerificationError`
  * on the first failure, before any AgentDB write (§2):
  *
@@ -232,6 +269,34 @@ export async function verifyActorCredential(
  * and `persistIssue` for the concrete resolution, and `docs/PLAN.md` §8 for
  * why this diverges from a literal reading of ACTOR-IDENTITY-VERIFICATION.md
  * §5 items 1-2.
+ *
+ * `kind: 'human'` handling — UPDATED, see `docs/design/HUMAN-CREDENTIAL-ISSUANCE.md`:
+ * §4's original locked decision blocked EVERY `kind: 'human'` OrgMember
+ * unconditionally, because no issuance path existed for them at all —
+ * "block" was a fail-closed placeholder for a missing mechanism, not a
+ * permanent policy (§4: "not closed by verification ... blocking is a
+ * fail-closed placeholder, not a solution"). `human-identity-attestation.ts`
+ * now provides that mechanism: `mintHumanActorCredential` mints a
+ * `kind: 'human'` `ActorCredential` only after independently verifying a
+ * signed `HumanIdentityAttestation` from an admitted external attester (a
+ * Cognitum-side service that already confirmed the human's identity — e.g.
+ * a verified `@cognitum.one` Slack identity, ADR-0002/ADR-0015 in
+ * `cognitum-one/slack`), and — critically — is the ONLY code path that ever
+ * writes a `humanAttestedCredentialMarkerKey` provenance marker for that
+ * credential's nonce. A `kind: 'human'` `ActorCredential` minted any other
+ * way (e.g. a bare `mintActorCredential` call naming a human's
+ * `orgMemberId`, still possible for anyone holding the durable issuer key,
+ * exactly as it always was for agents) carries no such marker and is still
+ * blocked below — the fail-closed default is otherwise UNCHANGED, and stays
+ * the default for every `kind: 'human'` OrgMember whose credential wasn't
+ * minted through that specific path. This is what "the block lifts only
+ * when a credential minted through this path is presented" means
+ * concretely: not a kind check alone (that would trust any signed
+ * credential naming a human, which `mintActorCredential`'s own "pure
+ * signer, caller-discipline" trust model — see `credential-issuer.ts`'s
+ * header — cannot rule out on its own), but a positive, AgentDB-backed fact
+ * that this specific credential went through real attestation
+ * verification.
  */
 export async function resolveVerifiedActor(
   authorization: ActorAuthorization,
@@ -250,11 +315,24 @@ export async function resolveVerifiedActor(
     );
   }
   if (actor.kind === 'human') {
-    throw new ActorIdentityVerificationError(
-      `Human-issued ActorCredentials are not supported yet (ACTOR-IDENTITY-VERIFICATION.md §4 — blocked until ` +
-        `real human credential issuance ships in Phase 2) — OrgMember '${orgMemberId}' is kind 'human' and cannot ` +
-        'be authorized via ActorCredential today; there is no fallback path',
+    // Deliberately keyed off the CREDENTIAL's own nonce (not derived from
+    // orgMemberId/companyId alone) — the marker binds to this one specific,
+    // freshly-minted credential instance, matching how the credential's own
+    // replay guard above is scoped (§3), not to "this OrgMember has ever
+    // had a marker."
+    const attested = await callTool<{ found?: boolean }>(
+      'memory_retrieve',
+      { key: humanAttestedCredentialMarkerKey(companyId, authorization.credential.nonce), namespace: HUMAN_ATTESTED_NAMESPACE },
+      config,
     );
+    if (!attested.found) {
+      throw new ActorIdentityVerificationError(
+        `OrgMember '${orgMemberId}' is kind 'human' and this ActorCredential carries no human-attestation ` +
+          'provenance marker (docs/design/HUMAN-CREDENTIAL-ISSUANCE.md) — only a credential minted via ' +
+          "mintHumanActorCredential, after verifying a real HumanIdentityAttestation, can authorize a human " +
+          'actor; there is no other fallback path',
+      );
+    }
   }
   return actor;
 }

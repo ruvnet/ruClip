@@ -281,6 +281,24 @@ succeeding — closing the residual `setInteractionProfileConsent` risk
 above is one of the things that issuance work will finish, not a separate
 follow-up.
 
+**UPDATE (2026-09-01): the human-issuance primitive named above as missing
+now exists — see `docs/design/HUMAN-CREDENTIAL-ISSUANCE.md`.**
+`mintHumanActorCredential` mints a real `kind: 'human'` `ActorCredential`
+after independently verifying a signed `HumanIdentityAttestation` from an
+admitted external attester (the human analogue of this section's own
+`claims_accept-handoff` chaining for agents), and `resolveVerifiedActor`
+(§2 above) now authorizes a `kind: 'human'` actor whose credential carries
+that path's AgentDB provenance marker. This is a narrower claim than "the
+block is lifted": every `kind: 'human'` credential minted any other way —
+including a bare `mintActorCredential` call naming a human `orgMemberId` —
+remains blocked exactly as decided here, unchanged. What's still open: no
+producer of a `HumanIdentityAttestation` exists yet (no login/dashboard
+flow calls this new mint function) — that remains Phase 2's own work,
+narrowed by this slice to "produce one signed statement" rather than
+"solve human authentication from scratch." `setInteractionProfileConsent`'s
+residual risk (§5 item 5 below) is likewise still open, deliberately out of
+this slice's scope.
+
 ## 5. Retrofit — the four call sites
 
 Every function below drops its `actor: OrgMember` parameter for

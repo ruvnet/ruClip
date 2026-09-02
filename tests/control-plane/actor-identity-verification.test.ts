@@ -3,10 +3,14 @@
  * design closes. Covers §7's required cases: a forged orgMemberId (tampered
  * post-signing) is rejected, an expired credential is rejected, a replayed
  * nonce is rejected, an unadmitted-but-validly-signed issuer key is
- * rejected, a kind:'human' OrgMember is refused with no fallback, and the
- * regression that matters most — the exact scenario security found (a
- * credential for a DIFFERENT orgMemberId than the one that submitted being
- * used to approve/reject) is now blocked.
+ * rejected, a kind:'human' OrgMember whose credential carries no
+ * human-attestation provenance marker is refused with no other fallback
+ * (docs/design/HUMAN-CREDENTIAL-ISSUANCE.md later added the ONE legitimate
+ * way to lift this — see tests/control-plane/human-identity-attestation.test.ts
+ * — everything else stays blocked exactly as this file originally proved),
+ * and the regression that matters most — the exact scenario security found
+ * (a credential for a DIFFERENT orgMemberId than the one that submitted
+ * being used to approve/reject) is now blocked.
  *
  * No live AgentDB/radio-moe network instance — mockBridge for the AgentDB
  * bridge, and the real `radio-moe` package (a real devDependency of this
@@ -147,13 +151,20 @@ test('resolveVerifiedActor recalls the fresh OrgMember and returns it for a kind
   assert.deepEqual(resolved, actor);
 });
 
-test('resolveVerifiedActor blocks a kind: "human" OrgMember with no fallback path — ACTOR-IDENTITY-VERIFICATION.md §4 locked decision', async () => {
-  const human = baseActor({ kind: 'human', id: 'om-human', identityRef: 'bbs:alice' });
-  const { config } = mockBridge({ 'agentdb_hierarchical-recall': orgMemberRecall(human), ...nonceMockHandlers() });
-  const authorization = await credentialFor(human);
+test(
+  'resolveVerifiedActor blocks a kind: "human" OrgMember whose credential carries no human-attestation ' +
+    'provenance marker — ACTOR-IDENTITY-VERIFICATION.md §4\'s fail-closed default, UNCHANGED by ' +
+    'docs/design/HUMAN-CREDENTIAL-ISSUANCE.md (see tests/control-plane/human-identity-attestation.test.ts for the ' +
+    'now-legitimate path via mintHumanActorCredential, and the regression proving this exact test still passes ' +
+    'for anything that did not go through it)',
+  async () => {
+    const human = baseActor({ kind: 'human', id: 'om-human', identityRef: 'bbs:alice' });
+    const { config } = mockBridge({ 'agentdb_hierarchical-recall': orgMemberRecall(human), ...nonceMockHandlers() });
+    const authorization = await credentialFor(human);
 
-  await assert.rejects(() => resolveVerifiedActor(authorization, config), ActorIdentityVerificationError);
-});
+    await assert.rejects(() => resolveVerifiedActor(authorization, config), ActorIdentityVerificationError);
+  },
+);
 
 test('resolveVerifiedActor rejects when the verified orgMemberId has no persisted OrgMember record', async () => {
   const actor = baseActor();
