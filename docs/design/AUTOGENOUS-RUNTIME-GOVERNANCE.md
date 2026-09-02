@@ -371,6 +371,29 @@ Concretely:
   candidate simply waits, visible in the audit trail (§6), for a human or
   a later slice to finish the loop — never auto-applied.
 
+**Known limitation, found by live-testing the real service, escalated not
+silently patched (2026-09-02)**: `FitnessVector.rollback_verified` is a
+real, binary hard gate server-side — confirmed by an A/B test against the
+live service (identical fitness otherwise; `false` → immediate
+`RollBack`, `true` → `Advance`). It means *"has a rollback been executed
+successfully in the target environment,"* and this v1 flow's own
+`fitnessFromBudgetLevel()` honestly reports `false` (never fabricated
+true) because **nothing is ever actually applied to `Company.budget` in
+v1's scope** — the bullet immediately above this one. The practical
+consequence: v1's canary loop can currently observe and record, but can
+never reach `Advance`, let alone `ReadyForPromotion` — this is the
+*correct* consequence of an honest `rollback_verified: false`, not a bug
+to silently patch with a hardcoded `true` (which would be reporting a
+verification that never happened). It also surfaces a real tension in
+this section's own design: Autogenous's staged-canary model implies
+*something* is genuinely, partially live during 1%→10%→50%→100% — which
+v1's "nothing applied until `/v1/promote`" framing doesn't provide a
+target for. Resolving this (a real, safe, executed rollback-verification
+step likely requires applying the mutation at some canary stage, not only
+at final promotion) is a genuine design decision about mutation-application
+semantics, not a one-line fix — escalated to team-lead rather than decided
+here. Tracked as an open item until resolved.
+
 ## 5. Why this scope, not a broader one
 
 - Every mutation this design proposes is reversible-by-construction and
