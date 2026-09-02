@@ -17,6 +17,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mockBridge } from '../support/mock-bridge.js';
 import {
+  getHealth,
   admitMutation,
   createCanary,
   observeCanary,
@@ -38,6 +39,7 @@ import {
 interface AutogenousRecordedCall {
   path: string;
   body: unknown;
+  headers: Record<string, string>;
 }
 
 function mockAutogenousService(handlers: Record<string, (body: unknown) => unknown>) {
@@ -45,7 +47,7 @@ function mockAutogenousService(handlers: Record<string, (body: unknown) => unkno
   const fetchImpl = (async (url: string, init?: RequestInit) => {
     const path = new URL(url).pathname;
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-    calls.push({ path, body });
+    calls.push({ path, body, headers: (init?.headers as Record<string, string>) ?? {} });
     const handler = handlers[path];
     if (!handler) {
       return { ok: false, status: 404, json: async () => ({}) } as Response;
@@ -289,6 +291,38 @@ test('AutogenousClientError with no baseUrl configured and no AUTOGENOUS_SERVICE
   } finally {
     if (previous !== undefined) process.env.AUTOGENOUS_SERVICE_URL = previous;
   }
+});
+
+// --- tokenProvider: real deployment requires a bearer OIDC identity token --
+
+test('tokenProvider, when supplied, is sent as an Authorization: Bearer header on every call', async () => {
+  const { calls, config } = mockAutogenousService({
+    '/health': () => ({ status: 'ok' }),
+  });
+  await getHealth({ ...config, tokenProvider: async () => 'fake-id-token' });
+  assert.equal(calls[0]!.headers['authorization'], 'Bearer fake-id-token');
+});
+
+test('getHealth omits the Authorization header when no tokenProvider is configured', async () => {
+  const { calls, config } = mockAutogenousService({
+    '/health': () => ({ status: 'ok' }),
+  });
+  await getHealth(config);
+  assert.equal(calls[0]!.headers['authorization'], undefined);
+});
+
+test('a tokenProvider that throws surfaces as AutogenousClientError, not a raw error', async () => {
+  const { config } = mockAutogenousService({ '/health': () => ({ status: 'ok' }) });
+  await assert.rejects(
+    () =>
+      getHealth({
+        ...config,
+        tokenProvider: async () => {
+          throw new Error('gcloud not authenticated');
+        },
+      }),
+    AutogenousClientError,
+  );
 });
 
 // --- Level-history + trigger + observation, against the AgentDB bridge -----

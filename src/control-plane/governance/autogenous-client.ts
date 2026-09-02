@@ -22,6 +22,24 @@
  * `{admitted: false, ...}` response is NOT an error — it's a normal,
  * successful HTTP response this client returns as-is; the caller decides
  * what "not admitted" means for its own flow.
+ *
+ * Live requirement, confirmed against the real deployment (2026-09-02): the
+ * service is `--no-allow-unauthenticated` (403 confirmed anonymous), so
+ * every call needs a bearer OIDC identity token. `tokenProvider` is
+ * injectable, not hardcoded to shelling out to `gcloud` — ruClip's own
+ * backend has no dedicated service account with `roles/run.invoker` on
+ * this service yet (tracked separately, not designed further here). For
+ * local/test verification, `gcloud auth print-identity-token` (an
+ * authenticated user identity that already holds `roles/run.invoker`) is
+ * the real, confirmed-working command — **not**
+ * `gcloud auth print-identity-token --audiences=<baseUrl>`, which the
+ * original design doc suggested: that flag combination errors for a plain
+ * user account ("Invalid account type for `--audiences`. Requires valid
+ * service account.") — `--audiences` requires either a real service
+ * account key or `--impersonate-service-account`. A bare
+ * `print-identity-token` worked because Cloud Run's IAM invoker check
+ * authorizes by identity, not by matching the token's audience claim to
+ * the service URL, for an already-authorized caller.
  */
 
 export class AutogenousClientError extends Error {
@@ -35,6 +53,8 @@ export interface AutogenousClientConfig {
   /** Defaults to the AUTOGENOUS_SERVICE_URL env var. No hardcoded default — see file header. */
   baseUrl?: string;
   fetchImpl?: typeof fetch;
+  /** Supplies the bearer OIDC identity token for every call — see file header. Omit only against a deployment that doesn't require one (e.g. a local dev instance). */
+  tokenProvider?: () => Promise<string>;
 }
 
 function resolveBaseUrl(config?: AutogenousClientConfig): string {
@@ -56,11 +76,22 @@ async function request<T>(
 ): Promise<T> {
   const fetchFn = config?.fetchImpl ?? fetch;
   const baseUrl = resolveBaseUrl(config);
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers['content-type'] = 'application/json';
+  if (config?.tokenProvider) {
+    let token: string;
+    try {
+      token = await config.tokenProvider();
+    } catch (err) {
+      throw new AutogenousClientError('tokenProvider failed to produce a bearer token', err);
+    }
+    headers['authorization'] = `Bearer ${token}`;
+  }
   let response: Response;
   try {
     response = await fetchFn(`${baseUrl}${path}`, {
       method,
-      headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
+      headers: Object.keys(headers).length > 0 ? headers : undefined,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch (err) {
