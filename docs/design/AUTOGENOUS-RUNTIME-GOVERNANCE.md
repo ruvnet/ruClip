@@ -25,6 +25,25 @@ its actual route/type contracts.
   designs against the documented contract, to be pointed at the real URL
   once live.
 
+**Live, 2026-09-02**: deployed to Cloud Run (`ruv-dev`),
+`https://autogenous-service-875130704813.us-central1.run.app` —
+`--no-allow-unauthenticated` (confirmed 403 anonymous), `/v1/judges/keys`
+confirmed returning real production keys distinct from the DEV seed
+fallback (§2's `main.rs` reading already showed the DEV-key path is a
+deliberate, logged fallback — this confirms production keys are actually
+pinned, not silently defaulting). Every call needs an OIDC identity token
+(`gcloud auth print-identity-token` with this URL as the audience, or
+equivalent) — there is no anonymous path. **Outstanding, not blocking
+today's verification**: ruClip's own backend has no GCP service account
+yet with `roles/run.invoker` on this service — the deployment agent
+correctly flagged this rather than deciding it unilaterally (same OIDC
+pattern already tracked for the AgentDB bridge, `ruvnet/ruClip` issue #1).
+`autogenous-client.ts` (§3/§7) should accept an injectable token-provider
+function (mirroring `fetchImpl`'s injection pattern) rather than assuming
+`gcloud` is always on the caller's `PATH` — production wiring of that
+service account is a concrete next step, tracked here, not designed
+further in this document.
+
 ## 1. The real API surface (every shape read from source, not assumed)
 
 Base routes (`crates/service/src/main.rs`'s `Router::new()`):
@@ -259,6 +278,18 @@ ruClip's own job, and exactly what §6's audit-trail design does.
 export interface AutogenousClientConfig {
   baseUrl?: string; // defaults to AUTOGENOUS_SERVICE_URL env var; no hardcoded default — unlike bridge-client.ts's localhost:3000, this service has no "obviously local" default since it's a real Cloud Run deployment, not a sidecar
   fetchImpl?: typeof fetch;
+  /**
+   * Real requirement, confirmed against the live deployment: the service
+   * is `--no-allow-unauthenticated` (403 confirmed anonymous), so every
+   * call needs a bearer OIDC identity token with this service's URL as
+   * audience. Injectable, not hardcoded to shelling out to `gcloud` —
+   * ruClip's own backend has no dedicated service account with
+   * `roles/run.invoker` on this service yet (tracked above, a concrete
+   * next step, not designed further here); a local developer/test
+   * identity can supply one via `gcloud auth print-identity-token
+   * --audiences=<baseUrl>` in the meantime.
+   */
+  tokenProvider?: () => Promise<string>;
 }
 
 export class AutogenousClientError extends Error {
