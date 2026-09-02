@@ -736,6 +736,17 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
      deliberately uses the opposite. Recorded here so a future edit doesn't
      "simplify" these three scripts onto one binary and reintroduce either
      bug.
+   - **Confirmed systemic, not two one-off bugs (`ruclip-tester`,
+     independently re-verified 2026-09-02)**: bare `metaharness bench` (no
+     `--op`) has the identical pathology — silently scaffolds an unwanted
+     `bench/` directory instead of doing anything bench-related, exit 0, no
+     error (reproduced and cleaned up by both the coder and the tester,
+     separately). What's actually wired here (`metaharness-darwin bench
+     verify ...`, a third, distinct binary) correctly avoids this. **Rule of
+     thumb for any future script addition**: never pass an unfamiliar verb
+     to the bare `metaharness` binary without checking `--help`/`harness
+     --help` first — an unrecognized subcommand doesn't error, it silently
+     scaffolds a new project named after that verb.
 5. **Phase 4 (NEW, 2026-09-01) — Autogenous runtime-governance integration**:
    wire `ruvnet/autogenous`'s antibody-package model as ruClip's live-company
    governance layer — typed mutation (a runtime failure: forged approval,
