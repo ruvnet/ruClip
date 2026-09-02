@@ -269,3 +269,116 @@ test('buildDashboardSnapshot returns null when the company does not exist', asyn
   const snapshot = await buildDashboardSnapshot('co-missing', config);
   assert.equal(snapshot, null);
 });
+
+// --- resolveOrgMemberRef memoization (docs/PLAN.md "Benchmark/optimize
+// investigation", 2026-09-02, team-lead approved) -------------------------
+
+test('buildDashboardSnapshot calls recallOrgMember exactly once per DISTINCT org member, not once per reference — the memoization actually cuts round trips, not just preserves output', async () => {
+  const company = baseCompany({ budget: { total: 1000, spent: 100, currency: 'USD', period: '2026-09', hardStopThreshold: 1 } });
+  const memberA = baseMember({ id: 'om-a', identityRef: 'agent-a', role: 'Engineer' });
+  const memberB = baseMember({ id: 'om-b', identityRef: 'agent-b', role: 'Designer' });
+
+  // 2 goals x 2 issues = 4 issues, referencing only 2 distinct org members
+  // across 7 total org-member references (2 goal owners, 4 issue assignees,
+  // 1 heartbeat assignee) — repeats deliberately, same shape as the
+  // architect's measured 65-references/4-distinct-members finding.
+  const goal1 = baseGoal({ id: 'goal-1', ownerId: 'om-a' });
+  const goal2 = baseGoal({ id: 'goal-2', ownerId: 'om-b' });
+  const issue1 = baseIssue({ id: 'issue-1', goalId: 'goal-1', assigneeId: 'om-a' });
+  const issue2 = baseIssue({ id: 'issue-2', goalId: 'goal-1', assigneeId: 'om-b' });
+  const issue3 = baseIssue({ id: 'issue-3', goalId: 'goal-2', assigneeId: 'om-a' });
+  const issue4 = baseIssue({ id: 'issue-4', goalId: 'goal-2', assigneeId: 'om-b' });
+  const heartbeat = baseHeartbeat({
+    id: 'hb-1',
+    target: { kind: 'issue', goalId: 'goal-1', issueId: 'issue-1' },
+    assigneeId: 'om-a',
+  });
+
+  const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': (args) => {
+      const query = args.query as string;
+      if (args.tier === 'semantic' && query === 'ruclip:company:co-1') {
+        return { results: [{ key: query, value: JSON.stringify(company) }] };
+      }
+      if (args.tier === 'semantic' && query === 'ruclip:company:co-1:org-member:om-a') {
+        return { results: [{ key: query, value: JSON.stringify(memberA) }] };
+      }
+      if (args.tier === 'semantic' && query === 'ruclip:company:co-1:org-member:om-b') {
+        return { results: [{ key: query, value: JSON.stringify(memberB) }] };
+      }
+      if (args.tier === 'semantic' && query === 'ruclip:company:co-1 goal') {
+        return { results: [{ value: JSON.stringify(goal1) }, { value: JSON.stringify(goal2) }] };
+      }
+      if (query === 'ruclip:company:co-1:goal:goal-1 issue') {
+        return args.tier === 'working'
+          ? { results: [{ value: JSON.stringify(issue1) }, { value: JSON.stringify(issue2) }] }
+          : { results: [] };
+      }
+      if (query === 'ruclip:company:co-1:goal:goal-2 issue') {
+        return args.tier === 'working'
+          ? { results: [{ value: JSON.stringify(issue3) }, { value: JSON.stringify(issue4) }] }
+          : { results: [] };
+      }
+      if (query === 'ruclip:company:co-1 heartbeat') {
+        return args.tier === 'working' ? { results: [{ value: JSON.stringify(heartbeat) }] } : { results: [] };
+      }
+      return { results: [] };
+    },
+    'agentdb_graph-query': () => ({ nodes: [] }),
+  });
+
+  const snapshot = await buildDashboardSnapshot('co-1', config);
+  assert.ok(snapshot);
+  // Output correctness is unchanged — every reference still resolves.
+  assert.deepEqual(snapshot!.goals.find((g) => g.id === 'goal-1')!.owner, {
+    id: 'om-a',
+    identityRef: 'agent-a',
+    role: 'Engineer',
+  });
+  assert.deepEqual(snapshot!.goals.find((g) => g.id === 'goal-2')!.owner, {
+    id: 'om-b',
+    identityRef: 'agent-b',
+    role: 'Designer',
+  });
+  assert.deepEqual(snapshot!.heartbeats[0]!.assignee, { id: 'om-a', identityRef: 'agent-a', role: 'Engineer' });
+
+  const orgMemberCalls = calls.filter(
+    (c) => c.toolName === 'agentdb_hierarchical-recall' && String(c.args.query).startsWith('ruclip:company:co-1:org-member:'),
+  );
+  // 7 references (2 goal owners + 4 issue assignees + 1 heartbeat assignee)
+  // to only 2 distinct members — without memoization this would be 7, not 2.
+  assert.equal(orgMemberCalls.length, 2);
+});
+
+test('the org-member cache does not leak across separate buildDashboardSnapshot calls — a second call re-fetches rather than reusing a stale/cross-call cache', async () => {
+  const company = baseCompany();
+  const goal = baseGoal({ id: 'goal-1', ownerId: 'om-owner' });
+  const owner = baseMember({ id: 'om-owner', identityRef: 'architect', role: 'Architect' });
+
+  const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': (args) => {
+      const query = args.query as string;
+      if (args.tier === 'semantic' && query === 'ruclip:company:co-1') {
+        return { results: [{ key: query, value: JSON.stringify(company) }] };
+      }
+      if (args.tier === 'semantic' && query === 'ruclip:company:co-1:org-member:om-owner') {
+        return { results: [{ key: query, value: JSON.stringify(owner) }] };
+      }
+      if (args.tier === 'semantic' && query === 'ruclip:company:co-1 goal') {
+        return { results: [{ value: JSON.stringify(goal) }] };
+      }
+      return { results: [] };
+    },
+    'agentdb_graph-query': () => ({ nodes: [] }),
+  });
+
+  await buildDashboardSnapshot('co-1', config);
+  await buildDashboardSnapshot('co-1', config);
+
+  const orgMemberCalls = calls.filter(
+    (c) => c.toolName === 'agentdb_hierarchical-recall' && String(c.args.query).startsWith('ruclip:company:co-1:org-member:'),
+  );
+  // One call PER buildDashboardSnapshot invocation (2 total) — a
+  // module-level/shared cache would have produced just 1.
+  assert.equal(orgMemberCalls.length, 2);
+});

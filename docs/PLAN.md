@@ -1793,6 +1793,43 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
     optimization); (2) a test proving the call count actually drops as
     measured (65→4 in the example above), not just that output is still
     correct. Routed to `ruclip-coder`.
+    - **Delivered (2026-09-02, coder)**: `dashboard/build-snapshot.ts` — a
+      new `OrgMemberCache = Map<string, Promise<DashboardOrgMemberRef |
+      null>>` type, threaded as a **required** parameter through
+      `resolveOrgMemberRef`/`buildIssueSnapshot`/`buildGoalSnapshot` (not
+      optional/defaulted — team-lead's requirement #1: a required param
+      makes it structurally impossible for a caller to accidentally fall
+      back to some shared/module-level instance). `resolveOrgMemberRef`
+      checks the cache before calling `recallOrgMember`, and stores the
+      in-flight PROMISE (not the resolved value) so concurrent lookups for
+      the same id within one build — e.g. an issue's assignee and a goal's
+      owner resolving concurrently under the same `Promise.all` — also
+      dedupe onto the single `recallOrgMember` call rather than both firing
+      one. `buildDashboardSnapshot` is the ONLY place a cache is
+      constructed (`new Map()`, fresh, every call) — no module-level
+      cache exists anywhere in the file.
+      Two new tests directly answer team-lead's requirement #2: (1)
+      a 2-goal/4-issue/1-heartbeat/2-distinct-org-member fixture (7 total
+      org-member references, same repeats-heavy shape as the architect's
+      measured 65-references/4-distinct finding) asserts
+      `recallOrgMember`-shaped mock-bridge calls (filtered via `calls` from
+      `tests/support/mock-bridge.ts`, matching the architect's own
+      call-counting method) equal exactly 2 — the DISTINCT count, not the
+      7 references — while also asserting output correctness is unchanged
+      (every owner/assignee reference still resolves to the right
+      `DashboardOrgMemberRef`); (2) two back-to-back
+      `buildDashboardSnapshot` calls for the same company assert 2 total
+      org-member calls (one per call), proving the cache does NOT persist
+      across separate invocations — directly verifying requirement #1
+      empirically, not just by code inspection. Verified test #1 is
+      actually meaningful, not trivially passing: temporarily reverted
+      `build-snapshot.ts` to the pre-fix version (`git show
+      fc8ba0c:...build-snapshot.ts`), rebuilt, and confirmed that test —
+      and only that test — fails (7 calls, not 2) before restoring the
+      fix. `tsc --strict` clean, 313/313 (was 311) on both Node 20.20.2
+      and 22.22.1. No new trust boundary, no new external input, output
+      shape unchanged — matches team-lead's coder→reviewer-only pipeline
+      call. Routing to `ruclip-reviewer`.
   - **`ruclip-metaharness`'s `.harness/bench.json` (Phase 3) stays
     correctness-only** — read all 6 tasks directly: every
     `successCriteria` is a pass/fail test outcome (`npm test` or a scoped

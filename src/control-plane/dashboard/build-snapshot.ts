@@ -90,23 +90,50 @@ export interface DashboardSnapshot {
   heartbeats: DashboardHeartbeatSnapshot[];
 }
 
+/**
+ * Per-`buildDashboardSnapshot`-call memoization for `resolveOrgMemberRef`
+ * (docs/PLAN.md "Benchmark/optimize investigation", 2026-09-02, team-lead
+ * approved) — a small-company shape (5 goals x 6 issues, 4 org members)
+ * measured 65 `recallOrgMember` round trips for only 4 distinct members,
+ * 61 of them pure duplicates, since `resolveOrgMemberRef` re-fetched the
+ * same org member on every reference. **Required, not optional/defaulted**
+ * — deliberately not a module-level/default-instance cache, so a stale or
+ * cross-company org-member reference can't silently leak between different
+ * companies or different snapshot builds (team-lead's explicit correctness
+ * requirement, distinct from the optimization itself): every caller must
+ * be handed a cache instance, and `buildDashboardSnapshot` is the only
+ * place one is constructed, fresh, per call. Stores the in-flight PROMISE
+ * (not the resolved value) so concurrent lookups for the same id within
+ * one build (e.g. an issue's assignee and a goal's owner resolving
+ * concurrently under the same `Promise.all`) also dedupe onto the same
+ * `recallOrgMember` call rather than racing to both start one.
+ */
+type OrgMemberCache = Map<string, Promise<DashboardOrgMemberRef | null>>;
+
 async function resolveOrgMemberRef(
   companyId: string,
   orgMemberId: string | null,
+  cache: OrgMemberCache,
   config?: AgentDbAdapterConfig,
 ): Promise<DashboardOrgMemberRef | null> {
   if (!orgMemberId) return null;
-  const member = await recallOrgMember(companyId, orgMemberId, config);
-  return member ? { id: member.id, identityRef: member.identityRef, role: member.role } : null;
+  const cached = cache.get(orgMemberId);
+  if (cached) return cached;
+  const pending = recallOrgMember(companyId, orgMemberId, config).then((member) =>
+    member ? { id: member.id, identityRef: member.identityRef, role: member.role } : null,
+  );
+  cache.set(orgMemberId, pending);
+  return pending;
 }
 
 async function buildIssueSnapshot(
   companyId: string,
   issue: Awaited<ReturnType<typeof listIssuesForGoal>>[number],
+  cache: OrgMemberCache,
   config?: AgentDbAdapterConfig,
 ): Promise<DashboardIssueSnapshot> {
   const [assignee, childIssueIds, blockerIssueIds] = await Promise.all([
-    resolveOrgMemberRef(companyId, issue.assigneeId, config),
+    resolveOrgMemberRef(companyId, issue.assigneeId, cache, config),
     getChildIssueIds(issue.id, config),
     getBlockerIssueIds(issue.id, config),
   ]);
@@ -127,13 +154,14 @@ async function buildIssueSnapshot(
 async function buildGoalSnapshot(
   companyId: string,
   goal: Awaited<ReturnType<typeof listGoalsForCompany>>[number],
+  cache: OrgMemberCache,
   config?: AgentDbAdapterConfig,
 ): Promise<DashboardGoalSnapshot> {
   const [owner, rawIssues] = await Promise.all([
-    resolveOrgMemberRef(companyId, goal.ownerId, config),
+    resolveOrgMemberRef(companyId, goal.ownerId, cache, config),
     listIssuesForGoal(companyId, goal.id, config),
   ]);
-  const issues = await Promise.all(rawIssues.map((issue) => buildIssueSnapshot(companyId, issue, config)));
+  const issues = await Promise.all(rawIssues.map((issue) => buildIssueSnapshot(companyId, issue, cache, config)));
   return {
     id: goal.id,
     description: goal.description,
@@ -163,14 +191,18 @@ export async function buildDashboardSnapshot(
     listHeartbeatsForCompany(companyId, config),
   ]);
 
+  // Fresh per call — see resolveOrgMemberRef's own header for why this must
+  // never be module-level/shared across companies or calls.
+  const orgMemberCache: OrgMemberCache = new Map();
+
   const [goalSnapshots, heartbeats] = await Promise.all([
-    Promise.all(goals.map((goal) => buildGoalSnapshot(companyId, goal, config))),
+    Promise.all(goals.map((goal) => buildGoalSnapshot(companyId, goal, orgMemberCache, config))),
     Promise.all(
       heartbeatSchedules.map(async (schedule) => ({
         id: schedule.id,
         target: schedule.target,
         assigneeId: schedule.assigneeId,
-        assignee: await resolveOrgMemberRef(companyId, schedule.assigneeId, config),
+        assignee: await resolveOrgMemberRef(companyId, schedule.assigneeId, orgMemberCache, config),
         cadenceSeconds: schedule.cadenceSeconds,
         status: schedule.status,
         nextFireAt: schedule.nextFireAt,
