@@ -811,6 +811,25 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        an app-level or deploy-time mitigation, per the same escalation
        discipline this project has used for every other genuinely
        load-bearing security tradeoff.
+     - **`ruclip-security` escalated, not signed off (2026-09-02)**: unlike
+       the round-1 items (audience-check omission, stdout credential print
+       — both traced through and accepted as benign), this one is judged a
+       real, complete, working identity-impersonation exploit requiring no
+       misconfiguration to trigger — ANY member of the `roles/run.invoker`
+       Google Group, even one with zero identity-mapping entry of their
+       own, can forge a JWT-shaped payload claiming any OTHER mapped
+       employee's email and receive a fully valid
+       `HumanIdentityAttestation` → `ActorCredential` for that identity.
+       Escalated directly to team-lead with the full exploit trace and a
+       recommended fix path (an Identity-Aware Proxy in front of Cloud
+       Run, for a genuinely verifiable forwarded-identity channel that
+       bare Cloud Run + IAM-invoker doesn't provide), plus an immediate,
+       zero-code interim mitigation available via IAM config alone (make
+       the invoker group's membership match the identity-mapping's
+       keyspace exactly) while the real fix is designed. Independently
+       verified `ruclip-tester`'s `forged-token-trust-boundary.test.ts`
+       reaches the same conclusion by reading the code path directly —
+       needs no changes. Not yet resolved — awaiting team-lead's decision.
    - The prerequisite bullets below (added 2026-09-01/02) describe exactly
      why 2b is needed — they remain accurate.
 
