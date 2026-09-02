@@ -1006,6 +1006,23 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
 
 ## 9. Open items carried forward (not blocking, tracked)
 
+- **Fixed 2026-09-02 (`scripts/run-tests.mjs`)**: `.github/workflows/ci.yml`
+  pins `node-version: 20`, but `package.json`'s `test` script passed a
+  quoted glob (`"dist/**/*.test.js"`) directly to `node --test` — glob
+  expansion by the test runner itself is a Node 22+ behavior; on Node 20 it
+  is treated as a literal filename and fails with `Could not find`. This had
+  been failing on every CI run on `main`, unnoticed locally because every
+  local dev environment here runs Node 22+. Reproduced and confirmed fixed
+  on both Node 20.20.2 (via `nvm use 20`) and Node 22.22.1 before committing,
+  not assumed. Fix: `scripts/run-tests.mjs`, a dependency-free script that
+  walks `dist/` recursively for `*.test.js` (both `dist/src/**` — coder-stage
+  colocated tests — and `dist/tests/**` — independent test-stage coverage;
+  narrowing the walk to just `dist/tests/` would have silently dropped 2 of
+  17 test files) and spawns `node --test` with an explicit file list, so it
+  depends on neither Node's own glob support nor which shell `npm` invokes
+  scripts with (an unquoted glob would depend on bash's globstar, which dash
+  doesn't support). Verified a genuinely failing test still exits non-zero
+  through the new script before committing.
 - `ruvector@0.2.25` pin vs. registry `0.3.0` drift — pre-existing, unrelated
   to ruClip, worth a separate fix.
 - "Animated scrollyteller parallax narrative" from the mission brief maps to
