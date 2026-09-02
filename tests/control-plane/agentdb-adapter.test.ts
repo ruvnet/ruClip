@@ -307,7 +307,7 @@ test('persistComment stores at the tier passed in for the parent issue', async (
   });
   const comment: Comment = { id: 'comment-1', issueId: 'issue-1', authorId: 'om-1', body: 'hi', createdAt: now };
   await persistComment('co-1', 'goal-1', comment, 'working', config);
-  assert.equal(calls[0]?.args.key, 'ruclip:company:co-1:goal:goal-1:issue:issue-1:comment:comment-1');
+  assert.equal(calls[0]?.args.key, 'ruclip:company:co-1:comment:comment-1');
   assert.equal(calls[0]?.args.tier, 'working');
 });
 

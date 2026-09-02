@@ -123,37 +123,56 @@ export function companyKey(companyId: string): string {
 export function orgMemberKey(companyId: string, orgMemberId: string): string {
   assertSafeId(companyId, 'companyId');
   assertSafeId(orgMemberId, 'orgMemberId');
-  return `ruclip:company:${companyId}:org-member:${orgMemberId}`;
+  return assertKeyFits(`ruclip:company:${companyId}:org-member:${orgMemberId}`);
 }
 export function goalKey(companyId: string, goalId: string): string {
   assertSafeId(companyId, 'companyId');
   assertSafeId(goalId, 'goalId');
-  return `ruclip:company:${companyId}:goal:${goalId}`;
+  return assertKeyFits(`ruclip:company:${companyId}:goal:${goalId}`);
 }
 export function issueKey(companyId: string, goalId: string, issueId: string): string {
   assertSafeId(companyId, 'companyId');
   assertSafeId(goalId, 'goalId');
   assertSafeId(issueId, 'issueId');
-  return `ruclip:company:${companyId}:goal:${goalId}:issue:${issueId}`;
+  return assertKeyFits(`ruclip:company:${companyId}:goal:${goalId}:issue:${issueId}`);
 }
-export function commentKey(companyId: string, goalId: string, issueId: string, commentId: string): string {
+/**
+ * The bridge's hierarchical store rejects keys longer than this (observed live:
+ * `{"success": false, "error": "key exceeds 128 characters"}` inside a non-error
+ * result). Nesting comment/approval-transition/heartbeat keys under
+ * company→goal→issue crossed it with ordinary ids, so those three are keyed at
+ * company level; the record itself carries goalId/issueId/target for scoping.
+ */
+export const MAX_AGENTDB_KEY_LENGTH = 128;
+function assertKeyFits(key: string): string {
+  if (key.length > MAX_AGENTDB_KEY_LENGTH) {
+    throw new AgentDbBridgeError(
+      `AgentDB key exceeds ${MAX_AGENTDB_KEY_LENGTH} characters (${key.length}): '${key}' — shorten the ids`,
+    );
+  }
+  return key;
+}
+export function commentKey(companyId: string, _goalId: string, _issueId: string, commentId: string): string {
   assertSafeId(commentId, 'commentId');
-  return `${issueKey(companyId, goalId, issueId)}:comment:${commentId}`;
+  return assertKeyFits(`${companyKey(companyId)}:comment:${commentId}`);
 }
 export function approvalTransitionKey(
   companyId: string,
-  goalId: string,
-  issueId: string,
+  _goalId: string,
+  _issueId: string,
   transitionId: string,
 ): string {
   assertSafeId(transitionId, 'transitionId');
-  return `${issueKey(companyId, goalId, issueId)}:approval-transition:${transitionId}`;
+  return assertKeyFits(`${companyKey(companyId)}:approval-transition:${transitionId}`);
 }
-/** HEARTBEATS-AND-COMMS.md §1 keying — mirrors goalKey/issueKey's target-shaped nesting. */
+/** HEARTBEATS-AND-COMMS.md §1 keying — company-scoped; the schedule's `target` carries goal/issue. */
 export function heartbeatKey(companyId: string, target: HeartbeatTarget, heartbeatId: string): string {
   assertSafeId(heartbeatId, 'heartbeatId');
-  const base = target.kind === 'issue' ? issueKey(companyId, target.goalId, target.issueId) : goalKey(companyId, target.goalId);
-  return `${base}:heartbeat:${heartbeatId}`;
+  if (target.kind === 'issue') {
+    assertSafeId(target.issueId, 'issueId');
+  }
+  assertSafeId(target.goalId, 'goalId');
+  return assertKeyFits(`${companyKey(companyId)}:heartbeat:${heartbeatId}`);
 }
 
 /** AUTOGENOUS-RUNTIME-GOVERNANCE.md §6 keying — mirrors heartbeatKey's company-scoped nesting. */
@@ -181,11 +200,29 @@ async function storeAtTier(
   tier: MemoryTier,
   config?: AgentDbAdapterConfig,
 ): Promise<void> {
-  await callTool('agentdb_hierarchical-store', { key, value: JSON.stringify(value), tier }, config);
+  const result = await callTool<{ success?: boolean; error?: string }>(
+    'agentdb_hierarchical-store',
+    { key, value: JSON.stringify(value), tier },
+    config,
+  );
+  assertToolSucceeded('agentdb_hierarchical-store', key, result);
+}
+
+/**
+ * The bridge reports some failures (key too long, backend refusal) as
+ * `{ success: false, error }` inside an ordinary result, not as a JSON-RPC
+ * error — so a write can "succeed" while nothing is stored. Treat that as
+ * a failure here, once, for every store/delete.
+ */
+function assertToolSucceeded(tool: string, key: string, result: { success?: boolean; error?: string } | null | undefined): void {
+  if (result && result.success === false) {
+    throw new AgentDbBridgeError(`AgentDB tool '${tool}' refused key '${key}': ${result.error ?? 'unknown error'}`);
+  }
 }
 
 async function deleteFromTier(key: string, tier: MemoryTier, config?: AgentDbAdapterConfig): Promise<void> {
-  await callTool('agentdb_hierarchical-delete', { key, tier }, config);
+  const result = await callTool<{ success?: boolean; error?: string }>('agentdb_hierarchical-delete', { key, tier }, config);
+  assertToolSucceeded('agentdb_hierarchical-delete', key, result);
 }
 
 /**
@@ -736,13 +773,16 @@ export async function listApprovalTransitionsForCompany(
   assertSafeId(companyId, 'companyId');
   const transitions: ApprovalTransition[] = [];
   for (const tier of ['working', 'episodic'] as const) {
-    const result = await callTool<{ results?: Array<{ value?: string }> }>(
+    const result = await callTool<{ results?: Array<{ key?: string; value?: string }> }>(
       'agentdb_hierarchical-recall',
-      { query: `ruclip:company:${companyId} approval-transition`, tier, topK: 200 },
+      { query: companyKey(companyId), tier, topK: 500 },
       config,
     );
     for (const r of result.results ?? []) {
+      // A similarity query with extra words returned nothing on a real bridge;
+      // the bare company prefix returns the company's records, filtered by key.
       if (typeof r.value !== 'string') continue;
+      if (typeof r.key === 'string' && !r.key.includes(':approval-transition:')) continue;
       try {
         const parsed = JSON.parse(r.value) as Partial<ApprovalTransition>;
         if (parsed && typeof parsed.issueId === 'string' && typeof parsed.actorId === 'string' && typeof parsed.action === 'string') {

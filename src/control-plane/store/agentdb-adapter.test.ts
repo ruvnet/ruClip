@@ -13,6 +13,8 @@ import {
   recallCompany,
   AgentDbBridgeError,
   type AgentDbAdapterConfig,
+  heartbeatKey,
+  MAX_AGENTDB_KEY_LENGTH,
 } from './agentdb-adapter.js';
 import type { Company } from '../schema/company.js';
 import type { OrgMember } from '../schema/org-member.js';
@@ -96,7 +98,7 @@ test('keying scheme matches DOMAIN-MODEL.md §2.2', () => {
   assert.equal(issueKey('co-1', 'goal-1', 'issue-1'), 'ruclip:company:co-1:goal:goal-1:issue:issue-1');
   assert.equal(
     commentKey('co-1', 'goal-1', 'issue-1', 'comment-1'),
-    'ruclip:company:co-1:goal:goal-1:issue:issue-1:comment:comment-1',
+    'ruclip:company:co-1:comment:comment-1',
   );
 });
 
@@ -266,4 +268,33 @@ test('recallCompany returns null when no exact key match is found', async () => 
   });
   const recalled = await recallCompany('missing-co', config);
   assert.equal(recalled, null);
+});
+
+test('storeAtTier fails loudly when the bridge answers success:false inside a normal result (key too long)', async () => {
+  const { config } = mockBridge({
+    'agentdb_hierarchical-store': () => ({ success: false, error: 'key exceeds 128 characters' }),
+  });
+  const company: Company = {
+    id: 'co-1',
+    name: 'Acme',
+    primaryGoalId: null,
+    budget: { total: 1000, spent: 0, currency: 'USD', period: '2026-09', hardStopThreshold: 0.9 },
+    status: 'active',
+    createdAt: now,
+    updatedAt: now,
+  };
+  await assert.rejects(() => persistCompany(company, config), /refused key .*key exceeds 128 characters/);
+});
+
+test('heartbeat, comment and approval-transition keys are company-scoped and stay under the bridge cap with long ids', () => {
+  const companyId = 'cognitum';
+  const goalId = 'goal-ruclip-launch';
+  const issueId = 'issue-heartbeat-scheduler-loop';
+  const hb = heartbeatKey(companyId, { kind: 'issue', goalId, issueId }, 'hb-issue-issue-heartbeat-scheduler-loop');
+  assert.equal(hb, 'ruclip:company:cognitum:heartbeat:hb-issue-issue-heartbeat-scheduler-loop');
+  assert.ok(hb.length <= MAX_AGENTDB_KEY_LENGTH);
+  const cm = commentKey(companyId, goalId, 'issue-a77be3cc-3cd6-455f-bf65-606f87f439ef', 'comment-10cb0f00-22fc-4156-b64c-ebca97472537');
+  assert.equal(cm, 'ruclip:company:cognitum:comment:comment-10cb0f00-22fc-4156-b64c-ebca97472537');
+  assert.ok(cm.length <= MAX_AGENTDB_KEY_LENGTH);
+  assert.throws(() => goalKey(companyId, 'g'.repeat(120)), /exceeds 128 characters/);
 });
