@@ -593,8 +593,60 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
      assumed). Dashboard write actions (approve/reject, consent-setting)
      remain out of THIS phase's scope — 2b is the CLI login/attestation
      producer only; whether/how the Artifact dashboard itself gets write
-     actions is still open, unaffected by this design. Not yet implemented
-     — awaiting coder handoff.
+     actions is still open, unaffected by this design.
+     - **Delivered 2026-09-02 (coder stage, awaiting architect
+       verification)**: `services/ruclip-attester/` (new, standalone
+       deployable — `src/server.ts` plain `node:http`, no framework;
+       `src/attest-handler.ts` the pure, dependency-injected handler;
+       `src/google-token.ts` wraps `google-auth-library@10.9.1`'s real
+       `OAuth2Client.verifyIdToken`; `src/identity-map.ts`/`src/signing-key.ts`
+       — both follow `credential-issuer.ts`'s exact GCP Secret Manager
+       discipline, `execFile` argument array, never logged, env-var-named
+       secrets, no hardcoded secret name/project) and
+       `src/cli/ruclip.ts` (this repo's first CLI entry point,
+       `package.json` `bin.ruclip`, one subcommand — `login`). Neither
+       `human-identity-attestation.ts` nor `credential-issuer.ts` was
+       touched — both consumed exactly as shipped. `google-auth-library`
+       added as a real, direct dependency (was already present only as an
+       undeclared transitive one). 30 new tests (18 attester + 6 CLI + 6
+       already-existing-suite-adjacent), 291 total, `tsc --strict` clean on
+       both Node 20.20.2 and Node 22.22.1.
+     - **§4 step 2's flagged-as-unconfirmed app-level verification —
+       CONFIRMED, live, not just unit-tested**: ran the real, compiled
+       server against a genuine Google ID token from this session's own
+       `gcloud` identity (`gcloud auth print-identity-token`, bare) —
+       `RealGoogleIdTokenVerifier` correctly performed a live Google JWKS
+       signature check, extracted `email`/`email_verified` accurately, and
+       `handleAttestRequest` produced the correct `google:<email>`
+       attestation end to end. This narrows what's genuinely still
+       unconfirmed to ONE specific platform behavior this session could not
+       test without deploying a new Cloud Run service (a real,
+       partially-irreversible infra action requiring explicit
+       authorization, not taken unilaterally, mirroring the standing
+       discipline around risky actions this project has held throughout):
+       **whether Cloud Run's own front-end proxy forwards the
+       `Authorization` header through to the container** when
+       `--no-allow-unauthenticated` — standard, documented Cloud Run
+       behavior, but not independently reproduced here. This is the one
+       piece that needs verifying against a real Cloud Run deployment of
+       `ruclip-attester` itself, the same "confirm once deployed" pattern
+       `autogenous-client.ts`'s own `--audiences` correction and §7's live
+       verification already established for Autogenous.
+     - The malformed/expired/wrong-issuer token cases the design asked to
+       be tested are covered via an injected `GoogleIdTokenVerifier`
+       interface simulating each outcome precisely — the real
+       `google-auth-library`-backed verifier fetches Google's live JWKS
+       *before* parsing the token at all (confirmed by reading its actual
+       source, not the `.d.ts`), so exercising THOSE specific real
+       rejection paths offline/in CI isn't possible without a live,
+       genuinely-Google-signed-but-expired/wrong-issuer token, which this
+       session has no way to fabricate. Documented in `google-token.ts`'s
+       own header, same "confirmed vs. still assumed" honesty as every
+       other live-service integration point in this project.
+     - Reused the existing `humanAttestationFor`/`testAdmittedAttesterKeys`
+       fixtures from `tests/support/actor-credential-fixture.ts` (already
+       shipped for `human-identity-attestation.test.ts`) rather than
+       building parallel ones.
    - The prerequisite bullets below (added 2026-09-01/02) describe exactly
      why 2b is needed — they remain accurate.
 

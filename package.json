@@ -9,6 +9,9 @@
     "type": "git",
     "url": "https://github.com/ruvnet/ruClip.git"
   },
+  "bin": {
+    "ruclip": "dist/src/cli/ruclip.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node scripts/run-tests.mjs dist",
@@ -17,12 +20,16 @@
     "harness:genome": "metaharness genome . --json",
     "harness:mcp-scan": "harness mcp-scan --json",
     "harness:advisory": "npm run harness:score && npm run harness:genome && npm run harness:mcp-scan",
-    "harness:bench-verify": "metaharness-darwin bench verify .harness/bench.json"
+    "harness:bench-verify": "metaharness-darwin bench verify .harness/bench.json",
+    "attester:start": "npm run build && node dist/services/ruclip-attester/src/server.js"
   },
   "devDependencies": {
     "typescript": "^5.6.3",
     "@types/node": "^20.14.15",
     "radio-moe": "^0.3.1"
+  },
+  "dependencies": {
+    "google-auth-library": "^10.9.1"
   },
   "peerDependencies": {
     "ruflo": "*",
