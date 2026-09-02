@@ -180,6 +180,26 @@ export async function buildDashboardSnapshot(
     ),
   ]);
 
+  // Security-hardening correction (security review round 8): getChildIssueIds/
+  // getBlockerIssueIds key their causal-graph nodes via entityNodeId('issue',
+  // issueId) = `entity:issue:{issueId}` — no companyId component, true since
+  // persistIssue's very first parent_of/blocks edge write. If two different
+  // companies' issues ever collide on id (assertValidIssue only enforces the
+  // safe-id charset, not global uniqueness), a foreign company's issue id
+  // could surface in childIssueIds/blockerIssueIds and be displayed verbatim
+  // as though it belonged to this company — confirmed by an independent test.
+  // No new AgentDB calls are needed to close this: by this point every issue
+  // id that genuinely belongs to `companyId` is already known (collected
+  // across every goal above), so filter both fields against that set —
+  // anything not in it is dropped rather than displayed.
+  const companyIssueIds = new Set(goalSnapshots.flatMap((g) => g.issues.map((i) => i.id)));
+  for (const goal of goalSnapshots) {
+    for (const issue of goal.issues) {
+      issue.childIssueIds = issue.childIssueIds.filter((id) => companyIssueIds.has(id));
+      issue.blockerIssueIds = issue.blockerIssueIds.filter((id) => companyIssueIds.has(id));
+    }
+  }
+
   const utilizationPct = company.budget.total > 0 ? company.budget.spent / company.budget.total : 0;
 
   return {
