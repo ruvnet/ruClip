@@ -972,6 +972,26 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        working end-to-end on the live service. Handed off to
        `ruclip-tester` next per the full-pipeline routing (security-
        sensitive change).
+     - **Architect independently verified (2026-09-02)**: read
+       `google-token.ts`, `attest-handler.ts`, `server.ts`, and both
+       rewritten test files in full — not just the delivery notes. Cross-
+       checked the coder's own "confirmed by reading installed source"
+       claim directly against `node_modules/google-auth-library/build/src/
+       auth/oauth2client.js`: `getIapPublicKeysAsync()` fetches
+       `https://www.gstatic.com/iap/verify/public_key` and returns
+       `{pubkeys: res.data, res}`; `verifySignedJwtWithCertsAsync(jwt,
+       certs, requiredAudience, issuers, maxExpiry)`'s real signature
+       matches the call site exactly — both genuinely exist and behave as
+       documented, not assumed from the coder's word. Re-ran `tsc
+       --strict` and the full suite myself — 311/311, clean. Confirmed the
+       adversarial test coverage is real, not relabeled: tampered-payload-
+       with-original-signature and attacker-key-with-real-`kid` both use
+       genuinely generated ES256 keypairs and real `verifySignedJwtWith-
+       CertsAsync` calls, and a wrong-audience-but-genuinely-IAP-signed
+       token is separately tested to confirm audience is actually
+       enforced, not just present in the code. Design doc updated to
+       match (`docs/design/HUMAN-CREDENTIAL-ISSUANCE-PRODUCER.md`, commit
+       `1c2f45d`, "Correction #3").
    - The prerequisite bullets below (added 2026-09-01/02) describe exactly
      why 2b is needed — they remain accurate.
 
