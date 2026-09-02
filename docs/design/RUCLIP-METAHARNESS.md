@@ -182,24 +182,30 @@ suite (which reaches these code paths directly and precisely, in-process)
 rather than a redblue HTTP fuzzer that structurally cannot reach them at
 all today.
 
-**Concrete, named prerequisite for when `@metaharness/redblue` genuinely
-applies**: once Phase 2 (dashboard) or any future ruClip service exposes a
-live, HTTP-reachable agent-employee endpoint (an actual chat/agent API an
-`OrgMember` of `kind: 'agent'` talks through), that is the real target
-`redblue.yaml`'s `target.kind: http` should point at — attacking that
-endpoint with `direct_prompt_injection`/`tool_overreach`/
-`data_exfiltration_attempt`/`role_confusion`/`cost_amplification` families
-(the real, confirmed families from `redblue attack --family all`, reproduced
-above) genuinely tests whether an attacker talking to that live agent can
-manipulate it into bypassing the budget/approval/identity gates this repo
-has built. `mockJudge: true` ($0, no `OPENROUTER_API_KEY` needed) is the
-right mode for CI once that day comes; real judging (`OPENROUTER_API_KEY`,
-capped `max_cost_usd`, default $3) stays an explicitly opt-in, occasional
-deeper run. **This is the same "Phase 2 is a load-bearing prerequisite,
-name it now rather than rediscover it later" pattern
-`ACTOR-IDENTITY-VERIFICATION.md` already established** — added to
-`docs/PLAN.md`'s Phase 2 entry alongside the existing human-credential-issuance
-prerequisite.
+**Resolved 2026-09-02 (team-lead decision, permanent, not deferred): this
+is never `@metaharness/redblue`'s job, not even once a live target
+exists.** The first version of this document flagged an open question —
+whether `ruclip-metaharness`'s own `redblue`/`flywheel` and Autogenous
+(Phase 4) end up complementary or duplicative once both have a real live
+target. Team-lead resolved it directly rather than waiting for both
+prerequisites to exist: `ruvnet/autogenous`'s antibody/canary/rollback
+model already replaces the from-scratch `redblue`+`flywheel`
+runtime-genome sketch, per `ADR-0001` amendment 7a — that decision predates
+this document and simply hadn't been reflected in `ADR-0001` §2's original
+text yet. **`ruclip-metaharness`'s scope is build-time genome only,
+permanently** — once Phase 2 (dashboard) or any future ruClip service
+exposes a live, HTTP-reachable agent-employee endpoint, it wires into
+**Autogenous's** flow (typed mutation → verifier admission → replay-measured
+fitness → staged canary → signed promotion/rollback), not into a
+resurrected `redblue.yaml`/`target.kind: http` integration here. The real,
+confirmed attack families this session found (`direct_prompt_injection`/
+`tool_overreach`/`data_exfiltration_attempt`/`role_confusion`/
+`cost_amplification`, reproduced above) remain useful reference material —
+they describe genuinely the right *kind* of adversarial coverage a live
+agent-employee endpoint needs — just delivered through Autogenous's
+mechanism, not `metaharness`'s. `ADR-0001` §2 and `docs/PLAN.md` §5/§8
+Phase 3 updated to state this permanently, so it doesn't get quietly
+re-proposed by a future slice.
 
 ## 4. `@metaharness/flywheel` gating — designed, not yet wired (nothing to gate yet)
 

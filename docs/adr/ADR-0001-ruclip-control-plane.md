@@ -60,11 +60,19 @@ adopting paperclip's own Node/React/Postgres stack:
    work-ownership primitives, and the `witness` signed audit manifest
    pattern (ADR-103) as the company's immutable activity log.
 2. **Governance/quality**: `metaharness` (already integrated, ADR-150) via a
-   new custom `ruclip-metaharness` bench suite — a build-time genome
-   (org-chart schema correctness, approval-gate enforcement, budget
-   hard-stops, audit completeness) and a runtime genome
-   (`@metaharness/redblue` adversarial testing of the live company, gated
-   through `@metaharness/flywheel` — evaluation is never auto-promoted).
+   new custom `ruclip-metaharness` bench suite — **build-time genome only,
+   permanently** (org-chart schema correctness, approval-gate enforcement,
+   budget hard-stops, audit completeness): `metaharness score`/`genome`
+   scoring the codebase and a `.harness/bench.json` task corpus verified
+   against `metaharness bench verify`. **`@metaharness/redblue` adversarial
+   testing of the live company is explicitly not part of this bench
+   suite's design, now or later** — superseded by Autogenous (Phase 4) per
+   amendment 7a below, which already states Autogenous's antibody/canary/
+   rollback model replaces the from-scratch `redblue`+`flywheel` runtime-
+   genome sketch this point originally carried. When Phase 2 ships a live
+   agent-employee target, it gets wired into Autogenous's flow, not into a
+   resurrected `redblue` integration here — this is a permanent scope
+   split, not a deferral pending both prerequisites existing.
 3. **Memory**: `ruvector` + AgentDB (`v3/@claude-flow/memory`) for semantic
    memory, and as the substrate for the one genuinely new data model this
    project needs — a thin Company → Goals → Issues (parent/child, blockers,

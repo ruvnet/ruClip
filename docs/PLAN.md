@@ -104,37 +104,46 @@ already owns, rather than adopting paperclip's Node/React/Postgres stack.
    └─────────────────────────────────────────┘
 ```
 
-## 5. Custom metaharness for ruClip (build + ops)
+## 5. Custom metaharness for ruClip (build-time only, permanently)
 
-Two distinct evaluation surfaces, both riding the existing `metaharness`
-primitives already in this repo (`plugins/ruflo-metaharness`) rather than a
-parallel implementation — matching the ADR-150 "removable, optional peer"
-constraint:
+**One evaluation surface, not two** — `ruclip-metaharness`'s scope is
+build-time genome only, riding the existing `metaharness` primitives
+already in this repo (`plugins/ruflo-metaharness`) rather than a parallel
+implementation, matching the ADR-150 "removable, optional peer" constraint:
 
-- **Build-time genome** (`metaharness genome`/`score`): scores the ruClip
-  *codebase itself* against a bench suite covering — org-chart schema
-  correctness, approval-gate enforcement (no action executes without a
-  satisfied gate), budget-hard-stop correctness, audit-trail completeness
-  (every state transition witnessed), agentbbs/AgentRadio message delivery,
-  dashboard Artifact capability wiring.
-- **Runtime genome — superseded by Autogenous (2026-09-01 amendment)**:
-  rather than a from-scratch `redblue`/`flywheel` adversarial harness for the
-  *live* company, ruClip adopts `ruvnet/autogenous`'s antibody-package model
-  directly — a runtime failure (a forged approval attempt, a budget-cap
-  bypass, an unauthorized agentbbs/AgentRadio post) becomes a typed, signed
-  antibody candidate, admitted only if it beats the parent behavior on a
-  labeled corpus, staged through canary 1→10→50→100%, and automatically
-  rolled back on regression. This is a stricter, already-implemented version
-  of the originally-sketched `redblue`+`flywheel` design — see §8 Phase 4,
-  its own roadmap phase rather than folded into `ruclip-metaharness`.
-  `metaharness`/`flywheel` remains the mechanism for *build-time* (nightly,
-  via dream-machine) evolution; Autogenous governs *runtime* evolution. Both
-  share the same "evaluation is not promotion without a signed gate"
-  discipline.
+- **Build-time genome** (`metaharness score`/`genome`, pure-read, no
+  bench.json needed for these two — real measured output as of the Phase 3
+  delivery: `harnessFit: 72`, `taskCoverage: 79`, `toolSafety: 100`, genome
+  `verdict: "ready"`) plus a hand-authored `.harness/bench.json` task
+  corpus (verified against the real `metaharness bench verify` tool)
+  covering: approval-gate self-approval invariant, budget hard-stop
+  correctness (Guard B), actor-identity forgery closure, budget-gated
+  heartbeats + agentbbs delivery, and `EmployeeInteractionProfile`
+  access-control boundary — each task wired to the real, already-passing
+  test file(s) that verify that property, wrapping the existing suite
+  rather than reinventing checks. `metaharness_mcp_scan` also runs cleanly
+  (currently: no MCP surface exposed, nothing to scan yet — becomes
+  meaningful the moment ruClip or its dashboard hosts one).
 
-The build-time genome above is a new `bench.json` suite under
-`ruvnet/ruClip/.harness/`, authored with `metaharness bench verify`, not a
-new evaluation engine.
+**`@metaharness/redblue`/`@metaharness/flywheel` adversarial/runtime
+testing is explicitly, permanently NOT part of `ruclip-metaharness`'s
+design** — decided 2026-09-02, not deferred pending both prerequisites
+existing. Confirmed by actually running `redblue init`/`redblue attack`:
+`redblue` needs a live, HTTP-reachable conversational agent/LLM endpoint to
+attack (its real attacks are natural-language prompts, not TypeScript
+function calls), which ruClip doesn't have. Rather than treat this as "wire
+it in once Phase 2 ships a target," the permanent decision is: that role
+belongs to Autogenous (Phase 4) — `ruvnet/autogenous`'s antibody-package
+model already replaces the from-scratch `redblue`+`flywheel` runtime-genome
+sketch per ADR-0001 amendment 7a, and when Phase 2 ships a live
+agent-employee endpoint, it gets wired into **Autogenous's** flow, not into
+a resurrected `redblue` integration here. `ruclip-metaharness` governs the
+*codebase*; Autogenous governs the *live company*; dream-machine (§6) runs
+the nightly cycle over the codebase. No component's scope grows to cover
+what another already owns.
+
+The build-time genome's bench corpus lives at `ruvnet/ruClip/.harness/bench.json`,
+authored with `metaharness bench verify`, not a new evaluation engine.
 
 ## 6. Nightly dream-machine integration (concrete, not new infra)
 
@@ -507,18 +516,19 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
    first, closing that residual gap as part of the same work, not as a
    separate follow-up.
    - **Second hard prerequisite added 2026-09-02**
-     (`docs/design/RUCLIP-METAHARNESS.md` §0 Finding B, §3): `@metaharness/redblue`
-     needs a live, HTTP-reachable agent/LLM endpoint to attack — confirmed
-     by actually running `redblue init` (real generated `redblue.yaml`:
-     `target.kind: none | http`, `http` requires a `url`/`responsePath`) and
-     `redblue attack` (real preview attacks are natural-language prompts
-     sent to a conversational target, not TypeScript function calls). ruClip
-     has no such live endpoint until this phase ships one. Phase 3's
-     "runtime genome" therefore stays on the existing regression test suite
-     (`RUCLIP-METAHARNESS.md` §3) until Phase 2 exposes a real
-     agent-employee endpoint `redblue.yaml`'s `target.kind: http` can point
-     at — that's the moment `@metaharness/redblue` genuinely applies, not
-     before.
+     (`docs/design/RUCLIP-METAHARNESS.md` §0 Finding B, §3): a live,
+     HTTP-reachable agent-employee endpoint — confirmed necessary by
+     actually running `redblue init`/`redblue attack` (real attacks are
+     natural-language prompts for a conversational target, not TypeScript
+     function calls; `redblue.yaml`'s real `target.kind: http` needs a
+     `url`/`responsePath`). **Decided 2026-09-02, permanently**: when this
+     endpoint ships, it wires into **Autogenous's** (Phase 4) flow, not
+     into `@metaharness/redblue` — `ruclip-metaharness` (Phase 3) stays
+     build-time-only forever, per `ADR-0001` amendment 7a and §5's updated
+     text. Until then, ruClip's existing regression test suite
+     (`RUCLIP-METAHARNESS.md` §3) is the ongoing verification that the
+     vulnerabilities this repo's security reviews found and fixed stay
+     fixed.
    - **Delivered this iteration** (`ACTOR-IDENTITY-VERIFICATION.md`,
      `src/control-plane/authorization/{actor-credential,credential-issuer}.ts`):
      `ActorCredential` (signed via `radio-moe`'s real `AgentFrame`
@@ -676,19 +686,17 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
      claim made against a target that isn't real. `flywheel`'s promotion
      gate (`confirm: true` + an approved Ed25519 key, never inferred) is
      documented but has nothing to gate yet either.
-   - **Worth architect/team-lead attention, not resolved here**: this
-     iteration's `@metaharness/redblue`/`flywheel` investigation was scoped
-     by this Phase 3 request, but the 2026-09-01 Autogenous amendment
-     (ADR-0001 §7a) already states Autogenous's antibody/canary/rollback
-     model *replaces* the from-scratch `redblue`+`flywheel` design as the
-     runtime-governance layer (Phase 4). Whether `ruclip-metaharness`'s own
-     `redblue`/`flywheel` (this phase) and Autogenous (Phase 4) end up
-     complementary (narrower ruClip-codebase-focused adversarial/evolution
-     coverage vs. broader live-company action governance) or actually
-     duplicative once both have a real live target to run against is worth
-     an explicit call before either gets built — flagged, not decided
-     unilaterally, matching how every other cross-phase ambiguity in this
-     roadmap has been resolved so far.
+   - **Resolved 2026-09-02 (was flagged, now decided)**: this iteration's
+     `@metaharness/redblue`/`flywheel` investigation was scoped by the
+     original Phase 3 request, but team-lead confirmed the 2026-09-01
+     Autogenous amendment (`ADR-0001` §7a) already settles this —
+     Autogenous's antibody/canary/rollback model *replaces*
+     `redblue`+`flywheel` as the runtime-governance layer, permanently, not
+     just until both prerequisites happen to exist. `ruclip-metaharness`'s
+     scope is build-time-only forever; `redblue`/`flywheel` are not part of
+     its design now or later. `ADR-0001` §2 and `PLAN.md` §5 updated to
+     state this explicitly so it doesn't get quietly re-proposed by a
+     future slice.
 5. **Phase 4 (NEW, 2026-09-01) — Autogenous runtime-governance integration**:
    wire `ruvnet/autogenous`'s antibody-package model as ruClip's live-company
    governance layer — typed mutation (a runtime failure: forged approval,
