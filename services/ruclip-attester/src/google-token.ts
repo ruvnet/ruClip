@@ -116,6 +116,27 @@ export interface IapVerifierConfig {
 }
 
 /**
+ * Security-review addition (round 2 of the IAP fix, pre-deployment):
+ * `OAuth2Client#getIapPublicKeysAsync()` — unlike its sibling
+ * `getFederatedSignonCertsAsync()` (used for classic Google ID tokens,
+ * confirmed by reading the same installed source) — has NO caching of its
+ * own; it hits `https://www.gstatic.com/iap/verify/public_key` fresh on
+ * every single call. Left as-is, every `/v1/attest` request would make a
+ * live network round-trip to Google before it could verify anything: added
+ * latency per login, and a new single point of failure where a transient
+ * outage/rate-limit on Google's endpoint fails EVERY login, not just the
+ * one in flight. Not a security gap (a fetch failure still fails closed —
+ * see the catch below, unchanged), but exactly the "operational risk once
+ * this is actually live" this class was asked to be checked for before
+ * step 2 touches the real service. Fixed with the same short-TTL,
+ * per-process cache identity-map.ts already establishes for the same class
+ * of secret/network read in this exact codebase (`CACHE_TTL_MS`) — the
+ * `config.publicKeys` test/dev escape hatch bypasses it entirely, same
+ * convention as that file's `mapJson` override.
+ */
+const PUBLIC_KEY_CACHE_TTL_MS = 60_000;
+
+/**
  * The real, deployed verifier — real ES256 cryptographic verification
  * against IAP's published public keys. See file header for the full
  * mechanism and what's confirmed-by-source vs. pending step 2 (live IAP
@@ -123,8 +144,23 @@ export interface IapVerifierConfig {
  */
 export class RealGoogleIdTokenVerifier implements GoogleIdTokenVerifier {
   private readonly client = new OAuth2Client();
+  private keyCache: { value: Record<string, string>; fetchedAt: number } | null = null;
 
   constructor(private readonly config: IapVerifierConfig = {}) {}
+
+  private async loadPublicKeys(): Promise<Record<string, string>> {
+    if (this.config.publicKeys) return this.config.publicKeys;
+    if (this.keyCache && Date.now() - this.keyCache.fetchedAt < PUBLIC_KEY_CACHE_TTL_MS) {
+      return this.keyCache.value;
+    }
+    try {
+      const { pubkeys } = await this.client.getIapPublicKeysAsync();
+      this.keyCache = { value: pubkeys, fetchedAt: Date.now() };
+      return pubkeys;
+    } catch (err) {
+      throw new GoogleIdTokenVerificationError('Failed to fetch IAP public keys from Google', err);
+    }
+  }
 
   async verify(idToken: string): Promise<GoogleIdTokenClaims> {
     const audience = this.config.audience ?? process.env.RUCLIP_ATTESTER_IAP_AUDIENCE;
@@ -137,17 +173,7 @@ export class RealGoogleIdTokenVerifier implements GoogleIdTokenVerifier {
       );
     }
 
-    let publicKeys: Record<string, string>;
-    if (this.config.publicKeys) {
-      publicKeys = this.config.publicKeys;
-    } else {
-      try {
-        const { pubkeys } = await this.client.getIapPublicKeysAsync();
-        publicKeys = pubkeys;
-      } catch (err) {
-        throw new GoogleIdTokenVerificationError('Failed to fetch IAP public keys from Google', err);
-      }
-    }
+    const publicKeys = await this.loadPublicKeys();
 
     let payload;
     try {
