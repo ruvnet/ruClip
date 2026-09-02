@@ -17,3 +17,14 @@ jobs:
       - run: npm install --no-audit --no-fund || true
       - run: npm run build
       - run: npm test
+      # ruclip-metaharness (docs/design/RUCLIP-METAHARNESS.md §5): advisory
+      # informational gate — no threshold to fail against yet (no baseline
+      # history), so a bad score/genome/mcp-scan reading is surfaced in the
+      # log but never fails the build.
+      - name: metaharness build-time genome (advisory)
+        run: npm run harness:advisory
+        continue-on-error: true
+      # Hard gate: cheap (~2s), catches .harness/bench.json tampering per
+      # ADR-076's anti-gaming intent (taskHash mismatch -> exit 1).
+      - name: metaharness bench suite integrity
+        run: npm run harness:bench-verify

@@ -697,6 +697,45 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
      its design now or later. `ADR-0001` §2 and `PLAN.md` §5 updated to
      state this explicitly so it doesn't get quietly re-proposed by a
      future slice.
+   - **CI wiring delivered 2026-09-02** (`RUCLIP-METAHARNESS.md` §5 —
+     coder stage): `package.json` gained five scripts —
+     `harness:score`/`harness:genome`/`harness:mcp-scan` (advisory),
+     `harness:advisory` (all three in sequence), and `harness:bench-verify`
+     (the hard gate). `.github/workflows/ci.yml` runs `harness:advisory`
+     with `continue-on-error: true` after `npm test` (never fails the
+     build — no baseline history to threshold against yet, per §1's own
+     instruction not to invent one) and `harness:bench-verify` with no
+     such override (fails the build on `.harness/bench.json` tampering —
+     verified live: corrupting one field flips `metaharness-darwin bench
+     verify`'s exit code from 0 to 1 with a clear "taskHash mismatch"
+     error). All four underlying invocations re-verified directly against
+     the real installed binaries before wiring, not assumed from the
+     design doc's own numbers alone.
+   - **One real CLI surprise found while wiring, not in the design doc**:
+     the `metaharness` npm package ships **two separate binaries** —
+     `metaharness` (`dist/bin.js`, the project *scaffolder*) and `harness`
+     (`dist/harness-bin.js`, an *already-scaffolded* project's own local
+     CLI). `score`/`genome` work identically on either binary (confirmed —
+     same output), but **`mcp-scan` exists ONLY on `harness`, not
+     `metaharness`** — running `metaharness mcp-scan .` (the naturally-guessed
+     form) does NOT scan anything; `mcp-scan` isn't a recognized subcommand
+     on that binary, so it silently falls through to the scaffolder's
+     top-level `<name> [--target <path>]` behavior and **creates an
+     unwanted new project directory literally named `mcp-scan/`** in the
+     repo root (caught immediately by `git status` before committing,
+     deleted, not left behind). The correct, verified invocation is
+     `harness mcp-scan --json`, which operates on the current directory by
+     default and reproduces the design doc's exact expected output
+     (`mcpEnabled: false`, the `"No MCP surface"` info finding). Separately,
+     `harness score`/`harness genome` (same binary, different subcommand
+     namespace than the scaffolder's own `score`/`genome`) emit a
+     completely different, unrelated schema (`harness-quickcheck-v1`) AND
+     `harness score` exits with code 2 even on a normal, successful-looking
+     run — so `harness:score` in this repo's scripts deliberately uses the
+     `metaharness` (scaffolder) binary, not `harness`, while `harness:mcp-scan`
+     deliberately uses the opposite. Recorded here so a future edit doesn't
+     "simplify" these three scripts onto one binary and reintroduce either
+     bug.
 5. **Phase 4 (NEW, 2026-09-01) — Autogenous runtime-governance integration**:
    wire `ruvnet/autogenous`'s antibody-package model as ruClip's live-company
    governance layer — typed mutation (a runtime failure: forged approval,
