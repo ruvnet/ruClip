@@ -495,10 +495,35 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
      from 177), `tsc --strict` clean, verified against the real installed
      `radio-moe@0.3.1` package (not a mock).
 3. **Phase 2 — Dashboard**: Claude Artifact-based company board (capabilities:
-   live state, multi-viewer, saved documents). **Hard prerequisite added
-   2026-09-01, narrowed 2026-09-01** (`docs/design/ACTOR-IDENTITY-VERIFICATION.md`
-   §4): real human authentication/login must be solved as this phase's
-   first concern, not designed later. `ActorCredential` verification (the
+   live state, multi-viewer, saved documents). **Split into 2a/2b,
+   2026-09-02** (`docs/design/ACTOR-IDENTITY-VERIFICATION.md` §4 plus a
+   direct investigation of the real Claude Artifact `artifact-capabilities`
+   skill/type contracts this session): Claude Artifacts, as currently
+   available to this account, have no capability that lets a page hand an
+   external system a portable, verifiable proof of viewer identity — the
+   one identity-adjacent capability (`user`, giving `Claude.user.id`) is
+   real and documented (cross-referenced in `db.d.ts`/`room.d.ts`) but not
+   in this account's available capability set, and even if it were, its
+   guarantee is scoped to the artifact's own `db` privacy semantics, not
+   exportable as a credential `ActorCredential` verification could check.
+   Confirmed by reading the platform's real type definitions directly, not
+   assumed; no capability grant is available to pursue further.
+   - **Phase 2a (this iteration) — read-only company board**: Company/
+     Goals/Issues visibility, heartbeat status, no write actions, no human
+     identity needed. See `docs/design/RUCLIP-DASHBOARD.md`.
+   - **Phase 2b (separate, later, not designed yet)** — human
+     `ActorCredential` issuance + dashboard write actions (approve/reject,
+     consent-setting). Not a small gap-fill on top of 2a — needs a real
+     auth mechanism outside Artifacts entirely, the Cloud Run fallback
+     `ADR-0001` point 5 already anticipated ("a dedicated Cloud Run app is
+     the fallback if Artifact capabilities prove insufficient"). Deserves
+     its own dedicated design pass once scheduled, grounded the same way
+     as everything else this session — likely real infrastructure (an auth
+     service, session/token issuance) rather than something bolted onto
+     2a's design.
+   - The prerequisite bullets below (added 2026-09-01/02) describe exactly
+     why 2b is needed — they remain accurate, now attributed to 2b
+     specifically rather than "Phase 2" undifferentiated. `ActorCredential` verification (the
    cross-cutting fix for the actor-forgery gap security found — closes it
    for agent `OrgMember`s via a fresh, per-call, cryptographically-signed
    credential) has no working issuance path for `kind: 'human'` actors —
