@@ -1969,11 +1969,15 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
     integrating against the same store layer — a secondary index (the
     external team's other suggested fix) would be speculative
     infrastructure for a problem ruClip's own code doesn't have.
-  - **Not yet fixed** — reported for severity assessment per team-lead's
-    explicit instruction before anyone starts fixing. Awaiting direction
-    on Finding 1's pipeline weight (full pipeline given claims-
-    authorization sensitivity, per team-lead's own framing) and whether
-    Finding 2 gets even the doc-comment treatment or is left as-is.
+  - **Team-lead approved (2026-09-02)**: full pipeline for Finding 1
+    (company-prefix the `issueId` string in `claims-authorization.ts`),
+    explicitly asked to check during implementation whether any other
+    real bridge consumer reads claims by bare `issueId` and, if so, note
+    the convention change clearly in delivery notes so it isn't a silent
+    breaking change for anyone else on the shared bridge. Finding 2: no
+    code task — a doc comment on `issueKey`/`recallIssue` is fine if
+    free while touching the area, not worth its own scope. Routed to
+    `ruclip-coder`.
 - **Fixed 2026-09-02 (`scripts/run-tests.mjs`)**: `.github/workflows/ci.yml`
   pins `node-version: 20`, but `package.json`'s `test` script passed a
   quoted glob (`"dist/**/*.test.js"`) directly to `node --test` — glob
