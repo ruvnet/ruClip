@@ -918,16 +918,64 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        returning. `AutogenousClientError` on unreachability propagates
        (never swallowed) through every call site, including
        `checkAndProposeBudgetMutation`'s own admit/canary-create calls.
-     - **NOT yet confirmed against a live response — explicitly not marked
-       done, per instruction**: §2.6's `CanaryState`/`Decision`
-       externally-tagged encoding is still inferred from serde's
-       documented default behavior only; `autogenous-service` was not
-       deployed at the time of this delivery. The "first real integration
-       test" §7 names (`GET /health`, then one real `/v1/agl/admit` call)
-       has not run. `getHealth()` is implemented and ready for that step.
-       Will flag the architect directly once the live URL is available to
-       finish this verification, per their explicit instruction, rather
-       than guessing further.
+     - **Live verification DONE (2026-09-02)** — the real deployment
+       (`https://autogenous-service-875130704813.us-central1.run.app`,
+       `ruv-dev`) exists now; ran §7's first-real-integration-test through
+       the actual shipped TypeScript client (not just `curl` equivalence —
+       a throwaway script imported the real compiled `getHealth`/
+       `admitMutation`/`createCanary`/`observeCanary`, no
+       `AutogenousClientError` thrown, every response accepted by
+       `assertValidCanaryState`/`assertValidDecision` with no fixture
+       guessing). **Everything §2/§2.6 documented is confirmed exactly
+       right**: `GET /health` returns the five real planes
+       (`constitutional`/`morphogenetic`/`simulation`/`execution`/`evidence`);
+       `/v1/agl/admit`'s `error`/`reason` Debug-string format matches
+       verbatim, including the PascalCase `Governed`/`AutoReversible`
+       nuance for a real `AuthorityExpansion` rejection; `/v1/canary/new`'s
+       real default `gates` match `DEFAULT_HARD_GATES` exactly
+       (`min_safety: 0.99`, etc.); `CanaryState`/`Decision`'s externally-
+       tagged shape is exactly §2.6's inference — `{"Serving": {...}}`,
+       `{"RolledBack": {...}}`, `{"Advance": {...}}`, `{"RollBack": {...}}`
+       all observed for real. One refinement to §2.4 worth naming: a
+       *unit-variant* `AdmissionError` (e.g. `NoRollback`) Debug-formats
+       with **no** `{...}` suffix — `reason` equals `error` verbatim in
+       that case, not every rejection has a bracketed reason string. No
+       code change needed (this repo's own types already treat both as
+       plain `string | null`), but worth knowing when reading logs.
+     - **One real, consequential finding from live testing — flagged to
+       architect, not silently patched, per their explicit instruction**:
+       `rollback_verified: false` is a **hard, binary gate** server-side,
+       confirmed by a controlled A/B test against the live service —
+       identical fitness values (`safety`/`governance`/`reliability`: 1.0,
+       zero regressions/false-positives) produce an immediate
+       `{RolledBack: ...}`/`{RollBack: ...}` when `rollback_verified` is
+       `false`, and `{Advance: {to_pct: 10}}` when it's `true`, with
+       nothing else different. `propose-budget-mutation.ts`'s
+       `fitnessFromBudgetLevel()` currently hardcodes `rollback_verified:
+       false` unconditionally ("never actually exercised, so never
+       honestly claimed true") — a deliberately honest choice at design
+       time that, per this live result, makes the v1 canary flow
+       **functionally unable to ever advance past 1%** as currently
+       written. This is a real design question (how does ruClip earn the
+       right to honestly claim `rollback_verified: true` — a genuine
+       rollback-verification step, or a different v1 scope entirely?), not
+       a code bug to patch silently — reported to architect for a decision
+       before touching `fitnessFromBudgetLevel()`.
+     - **One live-testing correction to the design doc's own suggested
+       verification command**: `gcloud auth print-identity-token
+       --audiences=<baseUrl>` (§0's suggested command) **errors** for a
+       plain authenticated user account — `"Invalid account type for
+       --audiences. Requires valid service account."` — that flag needs
+       either a real service-account key or
+       `--impersonate-service-account`. The command that actually worked:
+       a bare `gcloud auth print-identity-token` (no `--audiences`), since
+       Cloud Run's IAM invoker check authorizes by caller identity, not by
+       matching the token's audience claim, for an already-`roles/run.invoker`-
+       granted caller. `tokenProvider` (`AutogenousClientConfig`, added
+       this iteration per architect's `b325965`) is injectable and doesn't
+       assume either command — this is purely a note for whoever next runs
+       a manual verification.
+     - 256 tests total (up from 251), `tsc --strict` clean.
      - **Mechanics invented beyond the design doc's own wire contract**
        (documented in `propose-budget-mutation.ts`'s own file header, not
        silently decided): the "3+ consecutive WARNING-or-worse within a
@@ -963,6 +1011,37 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        this project has consistently avoided elsewhere. Wiring this call
        site is deferred until after the §7 live-verification step passes,
        not forgotten.
+   - **Live deployment confirmed (commit `b325965`, design-doc only, no
+     PLAN.md update at the time — recorded here now)**: team-lead deployed
+     `autogenous-service` to Cloud Run (`ruv-dev`),
+     `https://autogenous-service-875130704813.us-central1.run.app`,
+     `--no-allow-unauthenticated` (403 anonymous confirmed), `/v1/judges/keys`
+     confirmed returning real production keys distinct from the DEV-seed
+     fallback. `AutogenousClientConfig` gained `tokenProvider` — every call
+     needs a bearer OIDC identity token, injectable rather than hardcoded to
+     shelling out to `gcloud`. **Outstanding, not blocking**: ruClip's own
+     backend has no GCP service account yet with `roles/run.invoker` on this
+     service (same OIDC pattern already tracked for the AgentDB bridge,
+     `ruvnet/ruClip` issue #1) — a concrete next step, correctly flagged
+     rather than decided unilaterally.
+   - **Post-delivery security fix (commit `5d5745a`)**: `checkAndProposeBudgetMutation`'s
+     trigger was level-triggered, not edge-triggered — a sustained
+     WARNING-or-worse streak resubmitted a brand-new `/v1/agl/admit` +
+     `/v1/canary/new` pair on every reading after the 3rd consecutive one,
+     not just once per incident (since this v1 flow never actually updates
+     `Company.budget.hardStopThreshold`, the caller passes the identical
+     threshold on every check for as long as the incident persists — nothing
+     marked a streak as "already proposed for"). Given the service is now
+     live, an unbounded incident would have produced an unbounded stream of
+     duplicate mutation/canary submissions to a real external governance
+     service — directly undermining the "bounded, auditable mutations"
+     premise this whole integration exists for. Confirmed exploitable by an
+     independent test (4 consecutive WARNING readings produced 2 distinct
+     admit+canary pairs). Fixed by making the pattern edge-triggered: fires
+     once when the streak first crosses the threshold, stays silent for the
+     rest of that incident, and correctly fires again if the streak breaks
+     and a genuinely new incident begins later. 253 tests total (up from
+     251), `tsc --strict` clean.
 6. **Phase 5 — Dream-machine nightly integration**: config + `/schedule`
    routine, first ledger rows. **Amended 2026-09-01**: rotation surface is
    codebase-only (§6) — no runtime `redblue` rotation here, that's Phase 4's
