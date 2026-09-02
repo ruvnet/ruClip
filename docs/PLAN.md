@@ -1893,6 +1893,87 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
     service isn't live yet either), and a synthetic perf task risks
     encoding the WRONG target. Revisit once either ships a real,
     live-measurable request path.
+- **`ruvnet/ruClip#5` investigation (2026-09-02, architect) — two real
+  store-layer findings from an external team running against a REAL ruflo
+  bridge, severity assessed against ruClip's OWN code before anyone
+  fixes anything, per team-lead's instruction.** (A third finding from the
+  same issue, `recallByKey`'s `topK:10` pagination miss, was already fixed
+  and merged — commit `c96fe0f`, above.)
+  - **Finding 1 — claims are not company-scoped on the real bridge: REAL
+    gap, bounded severity, not a critical bypass.** Read
+    `claims-authorization.ts` in full. `verifyActorHoldsClaim` calls
+    `claims_list({claimant})` — the real bridge has no `companyId` on a
+    claim record, so this returns every claim for that claimant string
+    across every company sharing the bridge — then filters CLIENT-SIDE by
+    `issueId === issueId && claimant === claimant && status ∈
+    {active, handoff-pending}`. Traced the actual call path in
+    `checkAuthorizationGuard`/`applyApprovalTransition`
+    (`store/agentdb-adapter.ts` lines ~518-588, ~786-807): BEFORE
+    `verifyActorHoldsClaim` ever runs, `actor` is already a
+    cryptographically-verified `ActorCredential`-derived OrgMember whose
+    own `companyId` is checked (`actor.companyId !== companyId` throws),
+    AND `recallOrgMember(companyId, actor.id)` must find a real, `active`
+    persisted record for that exact actor in that exact company (a
+    caller-supplied object is never trusted for this). So exploiting the
+    unscoped claim requires an attacker who **already holds a genuine,
+    validly-issued credential for a real OrgMember in the TARGET
+    company** — this is not reachable by an anonymous or uncredentialed
+    caller. What it DOES enable: if that same actor's claimant string
+    (`kind:id:role`) coincidentally matches a genuine `active`/
+    `handoff-pending` claim filed by an OrgMember of a DIFFERENT company
+    on an issue with the identical literal id — realistic, not
+    contrived, since neither `OrgMember.id` nor `Issue.id` is enforced
+    globally unique (only charset-validated, same pattern
+    `build-snapshot.ts`'s own header already documents for issue ids),
+    and predictable seed-data ids (`om-1`, `issue-1`) are exactly what
+    the external team's real reproduction hit — `verifyActorHoldsClaim`
+    would wrongly treat that as "this actor holds a live claim," letting
+    them approve/reject an issue in a company they have no legitimate
+    relationship to. **Assessment: a real, worth-fixing cross-tenant
+    authorization gap, but bounded — it requires an already-credentialed
+    actor and a coincidental id/role collision, not an open door for
+    anyone.** Recommended fix (matches both the external team's and
+    team-lead's own suggestion): company-prefix the `issueId` string
+    `claims-authorization.ts` sends to `claims_claim`/`claims_handoff`/
+    `claims_accept-handoff`/`claims_list` (e.g. `` `${companyId}:${issueId}` ``)
+    — scoped entirely within this one file, no ruflo bridge change
+    needed. Flagging one thing to verify during implementation, not
+    assumed here: whether any other real consumer of the same bridge
+    reads claims by bare `issueId` and would need the same convention to
+    interoperate — worth a quick check before shipping, not a blocker to
+    scoping the fix.
+  - **Finding 2 — issue keys require goalId: NOT a live bug in ruClip's
+    own shipped code, confirmed by exhaustive grep, not sampling.**
+    `issueKey(companyId, goalId, issueId)` requires all three;
+    `recallIssue`'s own signature requires `goalId` as a parameter — a
+    2-arg call doesn't compile. Every real call site in this repo (`grep
+    -rn "recallIssue("`, excluding tests): `fire-heartbeat.ts:77`
+    (`schedule.target.goalId`/`.issueId`, both present on an issue-kind
+    `HeartbeatTarget`), `agentdb-adapter.ts:613/618` (`persistIssue`'s own
+    Guard checks, using `issue.goalId`/`issue.id` from the `Issue` object
+    itself), and the heartbeat-resume path at line 1037 (same shape as
+    `fire-heartbeat.ts`). `applyApprovalTransition` takes a full `Issue`
+    object, not a bare `issueId`, so it never needs to guess `goalId`
+    either. Also grepped for any manual key construction bypassing
+    `issueKey()` (`company:\${...}:issue:` without `:goal:`) — none
+    exists anywhere in `src/`. **Assessment: this is a real fact about the
+    store layer's key design, and a real trap for an EXTERNAL consumer
+    who assumes a companyId+issueId lookup works (exactly what the
+    external team's own code apparently did) — but it is not a live
+    defect in anything ruClip ships, because every internal call site
+    already has `goalId` on hand and the type signature makes the
+    company+issueId-only mistake impossible to write here.**
+    Recommendation: no code change in ruClip. If anything, a one-line
+    doc comment on `issueKey`/`recallIssue` stating the goalId
+    requirement explicitly, for the benefit of external consumers
+    integrating against the same store layer — a secondary index (the
+    external team's other suggested fix) would be speculative
+    infrastructure for a problem ruClip's own code doesn't have.
+  - **Not yet fixed** — reported for severity assessment per team-lead's
+    explicit instruction before anyone starts fixing. Awaiting direction
+    on Finding 1's pipeline weight (full pipeline given claims-
+    authorization sensitivity, per team-lead's own framing) and whether
+    Finding 2 gets even the doc-comment treatment or is left as-is.
 - **Fixed 2026-09-02 (`scripts/run-tests.mjs`)**: `.github/workflows/ci.yml`
   pins `node-version: 20`, but `package.json`'s `test` script passed a
   quoted glob (`"dist/**/*.test.js"`) directly to `node --test` — glob
