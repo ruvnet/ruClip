@@ -1830,6 +1830,24 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
       and 22.22.1. No new trust boundary, no new external input, output
       shape unchanged — matches team-lead's coder→reviewer-only pipeline
       call. Routing to `ruclip-reviewer`.
+  - **Unrelated correctness fix, external team, merged alongside the
+    memoization work (2026-09-02, commit `c96fe0f`, `ruvnet/ruClip#5`/`#6`)**:
+    `recallByKey` (`store/agentdb-adapter.ts`) is the single shared helper
+    every exact-key recall (`recallCompany`, `recallOrgMember`, `recallGoal`,
+    `recallIssue`, `recallApprovalTransition`, `recallHeartbeatSchedule`,
+    `recallAutogenousMutationRecord`) is built on — `agentdb_hierarchical-recall`
+    is a similarity/BM25 search, not an exact-key read, and the old
+    `topK: 10` page could genuinely miss the exact key once a company
+    accumulated more than ten sibling records (members/issues/heartbeats all
+    sharing the `ruclip:company:<id>` prefix), silently returning `null` from
+    every caller downstream of "recall the company" — found against a real
+    bridge, not the in-memory CI fake, which always returned the exact key
+    regardless of `topK` and so never surfaced this. Fixed by paging wide
+    (200, then 1000 once if the first page came back full without a match,
+    stopping early on a short page) — reviewed directly in source (the real
+    fail-closed/malformed-JSON handling checked, not assumed) and independently
+    re-verified via `tsc --strict` + the full suite before pushing. 2 new
+    regression tests (315 total, up from 313).
   - **`ruclip-metaharness`'s `.harness/bench.json` (Phase 3) stays
     correctness-only** — read all 6 tasks directly: every
     `successCriteria` is a pass/fail test outcome (`npm test` or a scoped
