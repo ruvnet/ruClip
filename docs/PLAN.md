@@ -848,6 +848,32 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        — cheap, orthogonal, catches a real regression class, worth doing
        regardless of the IAP timeline. Net: no #1, build #2, real fix is
        IAP pending team-lead's infra decision.
+     - **#2 delivered (2026-09-02, coder)**:
+       `services/ruclip-attester/scripts/assert-not-publicly-invokable.ts`
+       — `assertNoPublicInvoker` (pure, fixture-tested) throws if
+       `ruclip-attester`'s real Cloud Run IAM policy ever grants
+       `roles/run.invoker` to `allUsers`/`allAuthenticatedUsers`; a thin
+       CLI wrapper (`npm run attester:assert-not-public`) shells out to
+       `gcloud` (a CI/dev-environment context, not the attester's own
+       server container — same distinction `identity-map.ts`'s header now
+       documents) and is run manually/at deploy time, not wired into the
+       existing credential-less `.github/workflows/ci.yml` (that workflow
+       has no GCP auth configured; forcing this in would break CI for
+       everyone, not narrow scope). **A real gap found and fixed while
+       verifying live, not assumed**: `gcloud run services get-iam-policy`
+       does NOT error for a nonexistent/typo'd service — it returns a
+       valid, empty policy, which the guardrail would otherwise silently
+       treat as "safe." Fixed by running `gcloud run services describe`
+       first as an explicit existence check (confirmed that command DOES
+       fail loudly for a real nonexistent service, verified by redirecting
+       output to a file rather than piping — a pipe masks the real exit
+       code behind its last stage, an easy way to be fooled). Verified all
+       three states against the real deployed service: passes for
+       `ruclip-attester` itself, fails loudly for a nonexistent service
+       name, fails loudly with no `RUCLIP_ATTESTER_GCP_PROJECT` set. 7 new
+       tests (310 total, up from 300), `tsc --strict` clean on Node
+       20.20.2 and 22.22.1. Independent, narrow scope per instruction — no
+       app code touched, full pipeline not required.
      - **Team-lead authorized IAP, sequenced in two steps (2026-09-02)**:
        (1) code first, through the full pipeline — verify
        `x-goog-iap-jwt-assertion` (issuer `https://cloud.google.com/iap`,

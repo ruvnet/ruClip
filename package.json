@@ -21,7 +21,8 @@
     "harness:mcp-scan": "harness mcp-scan --json",
     "harness:advisory": "npm run harness:score && npm run harness:genome && npm run harness:mcp-scan",
     "harness:bench-verify": "metaharness-darwin bench verify .harness/bench.json",
-    "attester:start": "npm run build && node dist/services/ruclip-attester/src/server.js"
+    "attester:start": "npm run build && node dist/services/ruclip-attester/src/server.js",
+    "attester:assert-not-public": "npm run build && node dist/services/ruclip-attester/scripts/assert-not-publicly-invokable.js"
   },
   "devDependencies": {
     "@types/node": "^20.14.15",
