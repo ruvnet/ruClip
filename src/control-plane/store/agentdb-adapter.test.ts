@@ -24,28 +24,66 @@ interface RecordedCall {
   args: Record<string, unknown>;
 }
 
-/** Builds a fetchImpl that dispatches on the MCP tool name being called. */
+/**
+ * Builds a fetchImpl that dispatches on the MCP tool name being called.
+ *
+ * Also answers the `initialize` / `notifications/initialized` MCP handshake
+ * bridge-client.ts's callTool now performs before every first `tools/call`
+ * (see that file's header) — generically, so `calls` still records only
+ * real tool invocations and every test below keeps passing unchanged. This
+ * mirrors tests/support/mock-bridge.ts's fix for the same reason; this
+ * file predates that shared helper and keeps its own local copy.
+ */
 function mockBridge(handlers: Record<string, (args: Record<string, unknown>) => unknown>) {
   const calls: RecordedCall[] = [];
   const fetchImpl = (async (_url: string, init: RequestInit) => {
     const body = JSON.parse(String(init.body)) as {
-      params: { name: string; arguments: Record<string, unknown> };
+      method: string;
+      params?: { name?: string; arguments?: Record<string, unknown> };
     };
-    const { name, arguments: args } = body.params;
-    calls.push({ toolName: name, args });
+
+    if (body.method === 'initialize') {
+      return {
+        ok: true,
+        headers: { get: (_h: string) => null },
+        json: async () => ({
+          jsonrpc: '2.0',
+          id: '1',
+          result: {
+            protocolVersion: '2025-11-25',
+            capabilities: {},
+            serverInfo: { name: 'Claude-Flow MCP Server V3', version: '3.38.20' },
+          },
+        }),
+      } as unknown as Response;
+    }
+    if (body.method === 'notifications/initialized') {
+      return {
+        ok: true,
+        headers: { get: (_h: string) => null },
+        json: async () => ({}),
+      } as unknown as Response;
+    }
+
+    const { name, arguments: args } = body.params ?? {};
+    if (!name) {
+      throw new Error(`Mock bridge received an unrecognized RPC method '${body.method}'`);
+    }
+    calls.push({ toolName: name, args: args ?? {} });
     const handler = handlers[name];
     if (!handler) {
       throw new Error(`No mock handler registered for tool '${name}'`);
     }
-    const result = handler(args);
+    const result = handler(args ?? {});
     return {
       ok: true,
+      headers: { get: (_h: string) => null },
       json: async () => ({
         jsonrpc: '2.0',
         id: '1',
         result: { content: [{ type: 'text', text: JSON.stringify(result) }] },
       }),
-    } as Response;
+    } as unknown as Response;
   }) as typeof fetch;
   const config: AgentDbAdapterConfig = { fetchImpl, baseUrl: 'http://mock' };
   return { calls, config };
