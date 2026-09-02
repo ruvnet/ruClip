@@ -830,6 +830,24 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        verified `ruclip-tester`'s `forged-token-trust-boundary.test.ts`
        reaches the same conclusion by reading the code path directly —
        needs no changes. Not yet resolved — awaiting team-lead's decision.
+     - **`ruclip-security` follow-up (2026-09-02)**: confirmed the IAP
+       recommendation against Google's own documentation (not memory) —
+       header/issuer/audience/JWKS endpoint all checked, including that
+       `verifySignedJwtWithCertsAsync` (the same `google-auth-library`
+       method already found in this project's history) is Google's own
+       documented Node.js verification path for an IAP-signed
+       `x-goog-iap-jwt-assertion` header. Recommending team-lead pursue
+       IAP as the real fix — now with team-lead for the infra decision.
+       Explicit call on the architect's own two proposed interim
+       mitigations: **don't build #1** (the segment-content marker check)
+       — agreed it's theater relative to the real threat model, since the
+       marker string is now public (this project's own git history/
+       PLAN.md), and could give false confidence that something was
+       hardened when the actual vulnerability is untouched; **do build
+       #2** (a deploy-time CI assertion against `--allow-unauthenticated`)
+       — cheap, orthogonal, catches a real regression class, worth doing
+       regardless of the IAP timeline. Net: no #1, build #2, real fix is
+       IAP pending team-lead's infra decision.
    - The prerequisite bullets below (added 2026-09-01/02) describe exactly
      why 2b is needed — they remain accurate.
 
