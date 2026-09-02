@@ -1129,6 +1129,46 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
    — `radio-moe`'s only role in the shipped code is the signing layer
    inside `AgentBbsNotificationChannel`. This Phase 1f item is unaffected;
    it was already describing a distinct, not-yet-built integration point.)
+9a. **Bridge-client hardening (delivered this iteration, PR to `ruvnet/ruClip`
+   requested via ruClip#1)** — two corrections to `store/bridge-client.ts`
+   against the real, published bridge (`ruflo@3.38.20`, `ruflo mcp start -t
+   http`), found by running it, not assumed from the MCP spec: (1) a bare
+   `tools/call` came back `{"error":{"code":-32002,"message":"Server not
+   initialized"}}` — the bridge requires a JSON-RPC `initialize` request
+   (answering with `protocolVersion:"2025-11-25"`,
+   `serverInfo.name:"Claude-Flow MCP Server V3"`) followed by a
+   `notifications/initialized` notification first, and MAY return an
+   `Mcp-Session-Id` response header that must be echoed back on every later
+   request. `callTool` now performs this handshake lazily, once per
+   (fetch implementation, baseUrl) pair, caches the in-flight promise so
+   concurrent first calls don't double-initialize, and re-runs it exactly
+   once on a `-32002` so a bridge that restarted (and forgot the session)
+   self-heals instead of failing forever. (2) A Cloud Run bridge deployed
+   IAM-protected (no `--allow-unauthenticated`) needs a Google OIDC
+   `Authorization: Bearer` header on every request. New `store/bridge-
+   auth.ts` implements this — the same metadata-server pattern already
+   verified working in `cognitum-one/slack`'s `src/harness.rs::id_token()`
+   (`GET http://metadata.google.internal/.../identity?audience=<bridge
+   origin>` with `Metadata-Flavor: Google`) — deliberately **opt-in**
+   (`AgentDbAdapterConfig.auth: 'gcp-oidc'` / `RUCLIP_BRIDGE_AUTH=gcp-
+   oidc`, default `'none'`), fail-closed (a token-fetch failure throws
+   `AgentDbBridgeError` rather than falling through unauthenticated), with
+   the identity token cached and proactively refreshed off its own decoded
+   (not verified — the bridge verifies) `exp` claim. Both files stay
+   dependency-free leaves (`node:` builtins only), split across two files
+   to keep each under the repo's ~500-line convention and to avoid
+   recreating the exact two-way class-heritage import cycle
+   `bridge-client.ts`'s own header describes having broken once already:
+   `bridge-auth.ts` throws plain `Error`s rather than importing
+   `AgentDbBridgeError`, so the dependency between the two files stays
+   one-directional. `tests/support/mock-bridge.ts` (and the one pre-
+   existing local copy of it in `src/control-plane/store/agentdb-
+   adapter.test.ts`, found stale by running the suite, not by reading)
+   were both updated to answer `initialize`/`notifications/initialized`
+   generically, so every one of the existing 222 tests kept passing
+   unchanged; 11 new tests cover the handshake ordering/caching/session-id/
+   retry-once behavior and the OIDC opt-in/cache/fail-closed/off-by-default
+   behavior — 233 tests total, `tsc --strict` clean.
 10. **Throughout** — test/validate/secure/benchmark/optimize each phase via
    the standard swarm protocol in this repo's `CLAUDE.md`, using
    `ruflo-testgen`, `ruflo-security-audit`, `metaharness security_bench`, and
