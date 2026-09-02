@@ -7,8 +7,17 @@
  *
  * Deployed `--no-allow-unauthenticated` — Cloud Run's own IAM invoker check
  * (§3.1) is the FIRST authorization layer, enforced entirely by the
- * platform before a request ever reaches this process; this file only
- * implements the second layer (§4).
+ * platform before a request ever reaches this process. The SECOND layer
+ * (§4) is IAP identity verification (team-lead's authorization, replacing
+ * this file's previous read of the `Authorization` header — see
+ * google-token.ts and attest-handler.ts's own headers for the full
+ * history): once IAP is enabled in front of this service (a separate,
+ * later, live-deployment step, not done as part of this change), IAP
+ * injects its own signed identity assertion into the
+ * `x-goog-iap-jwt-assertion` header, which is what this file reads and
+ * passes through for verification — NOT the `Authorization` header, which
+ * Cloud Run's own proxy redacts the signature of before this process ever
+ * sees it.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { handleAttestRequest, type AttestResult } from './attest-handler.js';
@@ -34,9 +43,17 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  const iapHeader = req.headers['x-goog-iap-jwt-assertion'];
+  if (Array.isArray(iapHeader)) {
+    // A duplicated header is not a shape IAP itself ever sends — treat it
+    // as suspicious rather than picking one value silently.
+    writeJson(res, 401, { error: 'invalid identity token' });
+    return;
+  }
+
   let result: AttestResult;
   try {
-    result = await handleAttestRequest(req.headers['authorization'], {
+    result = await handleAttestRequest(iapHeader, {
       verifier,
       lookupIdentity: (email) => lookupIdentity(email),
       mintAttestation: (orgMemberId, companyId, humanIdentityRef) =>

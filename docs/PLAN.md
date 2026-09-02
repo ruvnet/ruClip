@@ -897,6 +897,81 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        gate, unchanged**: the identity-mapping secret stays empty until
        this is verified working end-to-end on the live service, not just
        in code review. Routed to `ruclip-coder`.
+     - **Step 1 (code) delivered (2026-09-02, coder)**: `google-token.ts`
+       rewritten to real ES256 cryptographic verification, replacing
+       decode-without-verify entirely — confirmed against the actual
+       installed `google-auth-library@10.9.1` source (`node_modules/
+       google-auth-library/build/src/auth/oauth2client.js`), not a docs
+       sample: `OAuth2Client#getIapPublicKeysAsync()` fetches
+       `https://www.gstatic.com/iap/verify/public_key`; `#verifySignedJwt-
+       WithCertsAsync(jwt, certs, audience, issuers)` does the real ES256
+       verify (via the library's own `ecdsa-sig-formatter` JOSE→DER
+       conversion) plus `iat`/`exp`/`iss`/`aud` checks and returns a
+       `LoginTicket`; `getIapPublicKeysAsync()`'s `{kid: PEM}` output plugs
+       directly into `verifySignedJwtWithCertsAsync`'s `certs` param. Also
+       independently confirmed against Google's own docs
+       (cloud.google.com/iap/docs/signed-headers-howto, fetched
+       2026-09-02): issuer `https://cloud.google.com/iap` and the Cloud Run
+       audience format both match the architect's message exactly; the
+       library's `oauth2IapPublicKeyUrl` constant matches Google's
+       documented endpoint verbatim; **IAP's JWT has no `email_verified`
+       claim at all** (unlike a classic Google Sign-In ID token) — since a
+       verified IAP `email` claim only exists because Cloud IAM already
+       authenticated the caller, `verify()` now maps a successfully-
+       verified token to `emailVerified: true` unconditionally rather than
+       reading a nonexistent field, documented explicitly in the file
+       header as a deliberate mapping, not an observed value. Audience is
+       config/env-driven (`RUCLIP_ATTESTER_IAP_AUDIENCE`), fails closed
+       with no live-value guess — confirming the real project number stays
+       step 2's job.
+       Also changed, following directly from the architect's header-name
+       correction (`x-goog-iap-jwt-assertion`, not `Authorization`) and
+       independently confirmed via the same Google doc fetch above (IAP's
+       header carries the raw JWT with **no** `Bearer` scheme prefix,
+       unlike the old `Authorization` header — and Google's own docs
+       explicitly warn the convenience headers `x-goog-authenticated-user-
+       email`/`-id` are forgeable by anyone who bypasses IAP, so this
+       service correctly never reads them): `attest-handler.ts` no longer
+       parses a `Bearer` scheme at all (took the raw header value
+       directly); `server.ts` now reads `x-goog-iap-jwt-assertion` instead
+       of `authorization`, with an explicit reject-not-silently-pick-one
+       guard for the (IAP-never-sends-it) duplicated-header array case.
+       `forged-token-trust-boundary.test.ts` — which previously
+       demonstrated the forged-token exploit succeeding — now demonstrates
+       it CLOSED (same forged-token shapes, flipped to `assert.rejects`,
+       through both the verifier directly and the full
+       `handleAttestRequest` pipeline). `google-token.test.ts` rewritten to
+       exercise the real cryptography end to end: a real generated P-256
+       keypair, real ES256 signing via the same `ecdsa-sig-formatter`
+       conversion the library itself uses (added as a devDependency for
+       this purpose), injected via the documented `config.publicKeys`
+       test/dev escape hatch (bypasses only the live network fetch, never
+       the crypto). Two tests specifically close the finding: a
+       validly-signed token with its payload tampered with post-signing
+       (email swapped, signature untouched) is now rejected, and a token
+       signed with an attacker-controlled key claiming the real key's `kid`
+       is rejected — both would have been silently accepted by the
+       previous round's decode-only verifier. `google-auth-library` added
+       back to `package.json` dependencies (`^10.9.1`, matching what was
+       actually verified against). `tsc --strict` clean, full suite
+       310 → 311 tests (net +1 after replacing the old decode-only tests
+       in `google-token.test.ts`/`forged-token-trust-boundary.test.ts`/
+       `attest-handler.test.ts` with real-crypto equivalents), 311/311
+       passing on both Node 20.20.2 and 22.22.1.
+       **What's confirmed-by-source vs. still pending step 2 (explicitly
+       not done here)**: the cryptographic mechanism, endpoint URLs, claim
+       names, and header contract above are all confirmed against real
+       installed source and Google's own current documentation — not
+       assumed. NOT yet confirmed, because IAP isn't live on the real
+       service yet: the real `RUCLIP_ATTESTER_IAP_AUDIENCE` value for the
+       actual deployed service (the real project number), and that IAP's
+       real, live-issued JWTs match this shape byte-for-byte against this
+       exact code path end to end. No "confirmed live" claim is made for
+       this round — that is explicitly step 2's job. Hard gate unchanged:
+       identity-mapping secret stays empty until step 2 verifies this
+       working end-to-end on the live service. Handed off to
+       `ruclip-tester` next per the full-pipeline routing (security-
+       sensitive change).
    - The prerequisite bullets below (added 2026-09-01/02) describe exactly
      why 2b is needed — they remain accurate.
 

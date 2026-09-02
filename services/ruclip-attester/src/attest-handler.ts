@@ -12,6 +12,21 @@
  * "your email isn't verified" from "you're not in our mapping" from the
  * response alone, since either signal narrows down real identity
  * information about who is and isn't a mapped employee.
+ *
+ * **IAP round (team-lead's authorization, replacing the Authorization-header
+ * approach — see google-token.ts's own header for the full history)**: the
+ * identity token this handler reads now comes from the
+ * `x-goog-iap-jwt-assertion` header IAP itself injects, not the
+ * `Authorization` header Cloud Run's own front-end proxy forwards (and
+ * redacts the signature of — the reason the previous round couldn't verify
+ * it). Confirmed against Google's own IAP documentation
+ * (cloud.google.com/iap/docs/signed-headers-howto, fetched 2026-09-02):
+ * that header carries the raw JWT with no scheme prefix — unlike
+ * `Authorization`, there is no `Bearer <token>` wrapping to parse here.
+ * Google's docs also name two additional unsigned convenience headers
+ * (`x-goog-authenticated-user-email`/`-id`) that this handler deliberately
+ * never reads — Google's own docs warn these are forgeable by anyone who
+ * bypasses IAP, so identity comes only from the verified JWT payload.
  */
 import type { HumanIdentityAttestation } from '../../../src/control-plane/authorization/human-identity-attestation.js';
 import type { GoogleIdTokenVerifier } from './google-token.js';
@@ -30,27 +45,13 @@ export type AttestResult =
   | { status: 401; body: { error: string } }
   | { status: 403; body: { error: string } };
 
-/**
- * HTTP auth scheme names are case-insensitive per RFC 7235 — real-behavior
- * finding from live deployment (docs/PLAN.md, commit 1fbdd2e): Cloud Run's
- * front-end forwards the Authorization header but lowercases the scheme to
- * `bearer`. A literal `startsWith('Bearer ')` check 401s every real,
- * IAM-authorized call. Matches the scheme case-insensitively; the token
- * itself (everything after the scheme) is untouched.
- */
-const BEARER_SCHEME_PATTERN = /^bearer\s+(.+)$/i;
-
 export async function handleAttestRequest(
-  authorizationHeader: string | undefined | null,
+  iapJwtHeader: string | undefined | null,
   deps: AttestDeps,
 ): Promise<AttestResult> {
-  const schemeMatch = authorizationHeader ? BEARER_SCHEME_PATTERN.exec(authorizationHeader) : null;
-  if (!schemeMatch) {
-    return { status: 401, body: { error: 'missing bearer token' } };
-  }
-  const idToken = schemeMatch[1]!.trim();
+  const idToken = iapJwtHeader?.trim();
   if (!idToken) {
-    return { status: 401, body: { error: 'missing bearer token' } };
+    return { status: 401, body: { error: 'missing IAP identity assertion' } };
   }
 
   let claims: Awaited<ReturnType<GoogleIdTokenVerifier['verify']>>;
