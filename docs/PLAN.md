@@ -671,6 +671,52 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
      at any stage. Design-doc correction from the implementation stage
      (§4 step 2's audience-check assumption) recorded in commit `bf38d56`.
      Handed to `ruclip-reviewer` for final sign-off.
+   - **Live deployment (2026-09-01, team-lead)**: `ruclip-attester` deployed
+     to Cloud Run (`ruv-dev`),
+     `https://ruclip-attester-875130704813.us-central1.run.app`,
+     `--no-allow-unauthenticated`. Two real bugs found via actual live
+     testing (an isolated, deployed-then-deleted echo service — not
+     inferred): **(1)** Cloud Run's front-end DOES forward the
+     `Authorization` header to the container (§7's flagged-unconfirmed
+     item — now confirmed, closing it), but lowercases the auth scheme to
+     `bearer`, and `attest-handler.ts`'s prefix check
+     (`startsWith('Bearer ')`) is case-sensitive — every real
+     IAM-authorized call currently 401s. **(2)** Cloud Run also replaces
+     the forwarded JWT's signature segment with the literal string
+     `SIGNATURE_REMOVED_BY_GOOGLE` — `RealGoogleIdTokenVerifier`'s
+     cryptographic `verifyIdToken` call can never succeed against a real
+     deployed request, only against the direct-to-process test the coder
+     ran locally before deployment (a genuine, real Google-signed token,
+     un-proxied). **Decided (team-lead)**: this is Cloud Run's own
+     standard, documented pattern for services behind
+     `--no-allow-unauthenticated` — the platform's IAM invoker check is
+     the real authentication boundary (a request cannot reach the
+     container without already passing it), so the forwarded, redacted
+     token is handed to the app purely to read claims from, not to
+     re-verify. Fix: decode-without-cryptographic-verification the
+     claims, plus structural sanity checks (3 dot-separated segments,
+     `iss` exactly `accounts.google.com`/`https://accounts.google.com`) in
+     place of signature verification, documented in code as a deliberate
+     choice (Cloud Run's IAM layer already did the real check), not a gap.
+     Routed through the full pipeline again given this touches the auth
+     verification path directly.
+     - Also queued: `Dockerfile`'s own documented deploy command
+       (`gcloud run deploy --source .` from repo root) silently falls back
+       to Buildpacks and fails, since the Dockerfile lives in
+       `services/ruclip-attester/` not the source root — **verified via
+       `gcloud builds submit --help` directly** (not assumed) that
+       `gcloud builds submit --tag` has no `-f`/`--dockerfile` override
+       flag; team-lead's own phrasing named that flag but it doesn't exist
+       on the real CLI. The two real working fixes: a `cloudbuild.yaml`
+       with an explicit `docker build -f services/ruclip-attester/Dockerfile .`
+       step (`--config=cloudbuild.yaml`, no `--tag`), or a local
+       `docker build -f services/ruclip-attester/Dockerfile -t <image> .`
+       → `docker push` → `gcloud run deploy --image`. Left the choice
+       between the two to the coder/reviewer.
+     - **Tracked, no code change**: ruClip's backend still has no dedicated
+       service account with `roles/run.invoker` scoped to
+       `ruclip-attester` — same open item already tracked for
+       `autogenous-service` above.
    - The prerequisite bullets below (added 2026-09-01/02) describe exactly
      why 2b is needed — they remain accurate.
 
