@@ -87,28 +87,10 @@ confirmed against paperclip's own per-domain split) ∧
 significance_sufficient (binary/structural claim, not a noisy metric —
 either the module shrinks with zero call-site changes or it doesn't; it
 did) ∧ no_material_regression (320/320 both sides) ∧ tests_green ∧
-reward_hack_clear ∧ critic_clear (see PR body) ∧ witness_valid ∧
-receipt_reproducible (`npm test` on both commits).
-
-## Witness
-
-- Session commit (parent): `41433bb971bc6152122acc180c5d695e55ea8c07`
-- Report sha256 (of this file, pre-witness-section-edit content hashed at
-  publish time — see verifier step 2): `35944f18c4e6de5471332ac4143f9fa9d3b05469d376b83b9465db8cf12c4cbd`
-- Witness stamp: `24e92f50954ff3fc5aa69ec3fc617cfd5cb55a58980e35da86a79fd9d2f04ffb`
-
-Verifier procedure (reproducible by anyone):
-1. `git show 41433bb971bc6152122acc180c5d695e55ea8c07 --stat` — confirm this
-   is the session's starting commit.
-2. `sha256sum <this file>` — confirm it matches the Report sha256 above.
-3. `printf '%s%s' <report_sha256> 41433bb971bc6152122acc180c5d695e55ea8c07 | sha256sum` —
-   confirm it matches the Witness stamp above.
-4. `git checkout 41433bb971bc6152122acc180c5d695e55ea8c07 -- . && npm ci && npm test` —
-   confirm 320/320 pass (baseline receipt).
-5. `git checkout dream/2026-09-02-architecture -- . && npm test` — confirm
-   320/320 pass, `agentdb-adapter.ts` is 1301 lines, `operating-budget.ts`
-   exists at 149 lines, and `git diff 41433bb -- src/ tests/ --stat` touches
-   exactly two files (one modified, one new).
+reward_hack_clear ∧ critic_clear (this session ran an adversarial pass
+distinct from the implementation pass; no separate agent — see Main
+lesson/limitation in the issue) ∧ witness_valid ∧ receipt_reproducible
+(`npm test` on both commits).
 
 ## Next steps (concrete)
 
@@ -125,3 +107,30 @@ Verifier procedure (reproducible by anyone):
    standing metric — the god-module diagnostic (line count × bounded
    contexts × dependent docs) is reusable on every future architecture
    rotation, not just tonight's.
+
+## Witness
+
+Hash scope: sha256 of this file's content from byte 0 up to (not
+including) the line `## Witness` above — i.e. delete this section and
+everything after it, then hash what remains. This avoids the
+self-referential-hash problem (a hash cannot include itself).
+
+- Session commit (parent): `41433bb971bc6152122acc180c5d695e55ea8c07`
+- Report sha256 (of the pre-Witness-section content, per the scope above):
+  `26efe93fb18a7aaa6a732482653bf26b2eb34d33e4ea20a932b514833c93f618`
+- Witness stamp (`sha256(report_sha256 + session_commit)`):
+  `f0a6bef15b18f29dd17e0266e316025401f13780532c61a63dcd51670e3f9a14`
+
+Verifier procedure (reproducible by anyone from this committed file alone):
+1. `git show 41433bb971bc6152122acc180c5d695e55ea8c07 --stat` — confirm
+   this is the session's starting commit.
+2. `sed '/^## Witness$/,$d' docs/dream-cycle/2026-09-02-architecture-report.md | sha256sum` —
+   confirm it matches the Report sha256 above.
+3. `printf '%s%s' <report_sha256> 41433bb971bc6152122acc180c5d695e55ea8c07 | sha256sum` —
+   confirm it matches the Witness stamp recorded in the ledger/issue/PR.
+4. `git checkout 41433bb971bc6152122acc180c5d695e55ea8c07 -- . && npm ci && npm test` —
+   confirm 320/320 pass (baseline receipt).
+5. `git checkout dream/2026-09-02-architecture -- . && npm test` — confirm
+   320/320 pass, `agentdb-adapter.ts` is 1301 lines, `operating-budget.ts`
+   exists at 149 lines, and `git diff 41433bb -- src/ tests/ --stat` touches
+   exactly two files (one modified, one new).
