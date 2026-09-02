@@ -160,7 +160,7 @@ test(
     const issue = baseIssue();
     const pausedSchedule = baseSchedule({ status: 'paused' });
     const issueKeyStr = 'ruclip:company:co-1:goal:goal-1:issue:issue-1';
-    const scheduleKeyStr = `${issueKeyStr}:heartbeat:hb-1`;
+    const scheduleKeyStr = `ruclip:company:co-1:heartbeat:hb-1`;
     const { calls, config } = mockBridge({
       'agentdb_hierarchical-recall': (args) => {
         if (args.query === scheduleKeyStr) {

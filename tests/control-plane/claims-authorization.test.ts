@@ -273,7 +273,7 @@ test(
     'persistIssue directly and bypassing applyApprovalTransition entirely',
   async () => {
     const submitterId = 'om-submitter';
-    const submitTransitionKey = `${issueKeyStr}:approval-transition:transition-submit`;
+    const submitTransitionKey = `ruclip:company:co-1:approval-transition:transition-submit`;
     const persistedSubmitTransition = baseTransition({
       id: 'transition-submit',
       action: 'submit',
@@ -343,7 +343,7 @@ test(
 
 test('recallApprovalTransition (used by Guard C\'s self-approval recheck) round-trips a stored transition by key', async () => {
   const transition = baseTransition({ id: 'transition-submit' });
-  const key = `${issueKeyStr}:approval-transition:transition-submit`;
+  const key = `ruclip:company:co-1:approval-transition:transition-submit`;
   const { config } = mockBridge({
     'agentdb_hierarchical-recall': (args) =>
       args.tier === 'working' && args.query === key

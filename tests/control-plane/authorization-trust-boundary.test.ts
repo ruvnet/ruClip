@@ -67,7 +67,7 @@ import type { ApprovalTransition } from '../../src/control-plane/schema/approval
 const now = '2026-09-01T00:00:00.000Z';
 const issueKeyStr = 'ruclip:company:co-1:goal:goal-1:issue:issue-1';
 const orgMemberKeyStr = 'ruclip:company:co-1:org-member:om-approver';
-const submitTransitionKeyStr = `${issueKeyStr}:approval-transition:transition-submit`;
+const submitTransitionKeyStr = `ruclip:company:co-1:approval-transition:transition-submit`;
 
 function baseIssue(overrides: Partial<Issue> = {}): Issue {
   return {

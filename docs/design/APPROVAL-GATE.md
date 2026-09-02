@@ -210,7 +210,7 @@ Steps:
    carries its own witness pointer rather than needing a follow-up write.
 3. Persist the `ApprovalTransition` record itself — same key/tier pattern
    as `Comment` (§2.2 of DOMAIN-MODEL.md): `ruclip:company:{companyId}:
-   goal:{goalId}:issue:{issueId}:approval-transition:{transitionId}`,
+   approval-transition:{transitionId}` (company-scoped; record carries issueId — bridge keys are capped at 128 chars),
    stored at the issue's *current* tier (before this call's status change,
    if any — approval transitions don't change `status`, so this is always
    the issue's existing tier), immutable, never updated after write.
