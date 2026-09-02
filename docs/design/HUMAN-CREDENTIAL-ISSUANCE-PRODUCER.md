@@ -52,6 +52,23 @@ separate, still-deferred surface.
    never logged, never written to disk, no hardcoded secret name/project —
    env vars name where to look, with an explicit test/dev override that
    bypasses the shell-out entirely.
+   - **Correction (implementation round 2, live deployment, 2026-09-02)**:
+     this pattern is correct for `credential-issuer.ts`'s OWN callers (this
+     repo's dev/CI/publish environment, which has `gcloud` on `PATH`) but
+     does NOT work inside `ruclip-attester` itself — deploying to the real
+     Cloud Run service produced `spawn gcloud ENOENT`, confirmed via the
+     service's own logs: the `node:20-slim` container has no `gcloud` CLI
+     installed at all. `identity-map.ts`/`signing-key.ts` (§2/§3.2 below)
+     were fixed to use the official `@google-cloud/secret-manager` client
+     library instead (Application Default Credentials — the service's own
+     runtime service account, automatically, no CLI needed). This is a
+     genuine gap in this design doc's own §0.4/§2/§3.2 assumption, not
+     something the coder should have caught without deploying — a design
+     doc reusing `credential-issuer.ts`'s pattern by name didn't account
+     for the two modules running in structurally different environments
+     (a dev/CI shell with `gcloud` vs. a minimal server container without
+     it). `credential-issuer.ts` itself is unaffected — its own callers
+     still have `gcloud` available.
 5. **No admin/company-owner concept exists in the schema today.** Checked
    `schema/org-member.ts`, `schema/company.ts`, `schema/enums.ts` directly:
    `OrgMember.role` is a free-form `string` (no capability semantics),
@@ -265,6 +282,28 @@ Handler steps:
      `--audiences` finding already established for `autogenous-client.ts`
      — not a new risk, the same trade-off already accepted for that
      service.
+   - **Correction #2 (live deployment, 2026-09-02) — this step's "verify
+     against Google's own JWKS" premise was also wrong, confirmed via a
+     real, isolated, deployed-then-deleted echo service, not inferred**:
+     Cloud Run's front-end DOES forward the `Authorization` header to the
+     container (closing this step's own flagged-open question above), but
+     it replaces the forwarded JWT's signature segment with the literal
+     string `SIGNATURE_REMOVED_BY_GOOGLE` first. Cryptographic
+     verification against Google's JWKS is therefore structurally
+     impossible on the real deployed path — the earlier "confirmed LIVE"
+     local test (PLAN.md, round 1) was testing a genuine, un-proxied
+     Google token, a different code path than any real production
+     request. Team-lead's resolved decision: this is Cloud Run's own
+     standard, documented pattern for `--no-allow-unauthenticated`
+     services — the platform's IAM invoker check (§3.1) already IS the
+     authentication boundary; the forwarded, redacted token exists so app
+     code can read identity claims, not re-verify them. `google-token.ts`
+     now decodes the payload without cryptographic verification, plus
+     structural sanity checks (exactly 3 dot-separated segments, `iss`
+     exactly `accounts.google.com`/`https://accounts.google.com`, `exp`
+     in the future if present) in place of signature verification —
+     documented in the file's own header as a deliberate, understood
+     choice, not a gap.
 3. Require `email_verified === true` on the token's claims (mirrors
    `cognitum-one/slack`'s own cited discipline of requiring a *verified*
    mailbox, not just workspace membership).
@@ -363,12 +402,23 @@ requirement (§3), not glossed over.
 - Credential/attestation revocation before natural TTL expiry — still not
   designed, same accepted trade-off as the original design (short TTL
   bounds exposure).
-- The Cloud Run app-level identity-forwarding behavior noted in §4 step 2
-  is standard, documented platform behavior but has not been empirically
-  confirmed against a real deployed `ruclip-attester` instance in this
-  session — flagged for the coder to verify during implementation, same
-  "don't assume, check" discipline that corrected the `--audiences` flag
-  earlier in this project (§0.3).
+- ~~The Cloud Run app-level identity-forwarding behavior noted in §4 step
+  2~~ — **CLOSED (2026-09-02), confirmed live**: Cloud Run does forward
+  the `Authorization` header, but redacts the JWT signature first. See
+  §4 step 2's Correction #2 for the full finding and the resulting design
+  change (decode-without-verify, not JWKS verification).
+- **Still genuinely open**: the service's runtime service account
+  (`875130704813-compute@developer.gserviceaccount.com`, the default
+  compute SA — no dedicated one provisioned yet) has not been granted
+  `roles/secretmanager.secretAccessor` on either
+  `ruclip-attester-signing-key` or `ruclip-attester-identity-map` — a real
+  IAM change on a live GCP project, correctly not made unilaterally by
+  either the coder or this document. Full end-to-end live verification (a
+  real `200` with a signed attestation) is blocked on this grant. The
+  already-tracked "no dedicated service account with `roles/run.invoker`"
+  item (§3.1) should be folded into the same IAM change — one new service
+  account, both grants — rather than patching the default compute SA
+  piecemeal.
 - Phase 2a's own separate open question (no exportable Claude Artifact
   viewer identity — `RUCLIP-DASHBOARD.md`) is unaffected by this phase;
   the dashboard's own write-action auth story, if it ever needs one beyond
