@@ -1007,6 +1007,35 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        plus the orthogonal `--allow-unauthenticated` CI guardrail closes
        the forged-token exploit from two independent angles. Handed to
        `ruclip-security` for the security-sensitivity pipeline stage.
+     - **`ruclip-security` signed off (2026-09-02)**: independently
+       re-verified the load-bearing claims rather than trusting the commit
+       message — read `verifySignedJwtWithCertsAsync`'s real source
+       directly and confirmed genuine ES256 `crypto.verify(cert, signed,
+       signature)` plus `iat`/`exp`/clock-skew/issuer/audience enforcement,
+       re-ran the full suite (311/311). Confirmed the exact exploit from
+       the original escalation is closed: the tampered-payload and
+       attacker-key-with-real-`kid` tests recreate it precisely and both
+       are now rejected, correctly because verification uses the PUBLIC
+       KEY the trusted `kid` maps to, not whatever key an attacker
+       actually signed with. Confirmed the old `Authorization`/Bearer path
+       is genuinely gone, not dormant, and called out the coder's decision
+       to never read IAP's unsigned convenience headers
+       (`x-goog-authenticated-user-email`, which Google's own docs flag as
+       forgeable) as exactly the kind of mistake that would have silently
+       reintroduced the vulnerability in a different shape. One
+       pre-deployment fix found and applied: `getIapPublicKeysAsync()` has
+       no caching of its own (confirmed via source — unlike its sibling
+       `getFederatedSignonCertsAsync`), so every `/v1/attest` call would
+       hit `gstatic.com` live — not a security gap (fails closed on fetch
+       failure) but real per-login latency and a new single point of
+       failure; fixed with the same short-TTL per-process cache
+       `identity-map.ts` already establishes for this exact class of read
+       (commit `1cfa30a`). Architect independently re-verified: read the
+       cache addition directly, confirmed it's effective given `server.ts`
+       instantiates `RealGoogleIdTokenVerifier` as a module-level
+       singleton (not per-request), re-ran `tsc --strict` and the full
+       suite — 311/311, clean. No other issues found. Routed to
+       `ruclip-reviewer` for final sign-off on this round.
    - The prerequisite bullets below (added 2026-09-01/02) describe exactly
      why 2b is needed — they remain accurate.
 
