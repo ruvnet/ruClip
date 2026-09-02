@@ -566,19 +566,37 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        blocked heartbeat and a blocked issue are both included in the
        sample data specifically to prove §2's "shown plainly" requirement
        renders correctly, not just parses correctly.
-   - **Phase 2b (separate, later, not designed yet)** — human
-     `ActorCredential` issuance + dashboard write actions (approve/reject,
-     consent-setting). Not a small gap-fill on top of 2a — needs a real
-     auth mechanism outside Artifacts entirely, the Cloud Run fallback
-     `ADR-0001` point 5 already anticipated ("a dedicated Cloud Run app is
-     the fallback if Artifact capabilities prove insufficient"). Deserves
-     its own dedicated design pass once scheduled, grounded the same way
-     as everything else this session — likely real infrastructure (an auth
-     service, session/token issuance) rather than something bolted onto
-     2a's design.
+   - **Phase 2b — designed 2026-09-01**
+     (`docs/design/HUMAN-CREDENTIAL-ISSUANCE-PRODUCER.md`): the human
+     `HumanIdentityAttestation` *producer* — the piece
+     `HUMAN-CREDENTIAL-ISSUANCE.md` §5 named as still open. Investigated
+     first, per team-lead's instruction: Cognitum Slack identity
+     (`cognitum-one/slack` ADR-0002/0015) is real and mature but has no
+     export mechanism anywhere across its 20 ADRs, and is a different
+     team's private repo — ruled out as ruClip's v1 producer, not assumed.
+     Direction instead: a new, minimal `ruclip-attester` Cloud Run service
+     (the Cloud Run fallback `ADR-0001` point 5 anticipated) plus a
+     CLI-based `ruclip login` reusing a human's own already-authenticated
+     `gcloud` identity — no new OAuth/browser consent flow. Team-lead
+     approved the direction with one explicit requirement: design the
+     Google-identity → `OrgMember.identityRef` mapping's write boundary
+     precisely, since whoever can edit it can grant impersonation of a
+     specific human employee. Resolved: **v1 has no runtime write path for
+     that mapping at all** — it is a deploy-time GCP Secret Manager
+     artifact, editable only by whoever already holds this repo's existing
+     secret-edit/deploy authority (same per-secret IAM-scoping discipline
+     as the npm-publish signing key and `credential-issuer.ts`'s own
+     issuer key); a real self-service admin flow is explicitly deferred,
+     since it would need an owner/admin concept the schema doesn't have
+     yet (`OrgMember.role` is a free string; the only structural signal is
+     `managerId: null` for the single root member — checked directly, not
+     assumed). Dashboard write actions (approve/reject, consent-setting)
+     remain out of THIS phase's scope — 2b is the CLI login/attestation
+     producer only; whether/how the Artifact dashboard itself gets write
+     actions is still open, unaffected by this design. Not yet implemented
+     — awaiting coder handoff.
    - The prerequisite bullets below (added 2026-09-01/02) describe exactly
-     why 2b is needed — they remain accurate, now attributed to 2b
-     specifically rather than "Phase 2" undifferentiated.
+     why 2b is needed — they remain accurate.
 
    `ActorCredential` verification (the
    cross-cutting fix for the actor-forgery gap security found — closes it
