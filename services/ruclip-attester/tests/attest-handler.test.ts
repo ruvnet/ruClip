@@ -1,12 +1,15 @@
 /**
  * Coverage for docs/design/HUMAN-CREDENTIAL-ISSUANCE-PRODUCER.md §4's
  * `/v1/attest` handler: mapping hit, mapping miss, expired/malformed/
- * wrong-issuer tokens (simulated via the injected `GoogleIdTokenVerifier`
- * interface — see google-token.ts's own header for why the REAL
- * google-auth-library-backed verifier cannot be exercised for these cases
- * without a live network call to Google), unverified email, and the
- * generic-error-message requirement (no info leaked about which rejection
- * reason applied).
+ * wrong-issuer tokens (simulated here via the injected `GoogleIdTokenVerifier`
+ * interface, to isolate the HANDLER's own reaction to a rejection —
+ * google-token.test.ts covers the real `RealGoogleIdTokenVerifier` decode
+ * logic directly, now that it's pure/offline-testable, see that file's own
+ * header for why), unverified email, the generic-error-message requirement
+ * (no info leaked about which rejection reason applied), and the
+ * case-insensitive `Bearer` scheme match (real-behavior finding from live
+ * deployment testing, docs/PLAN.md commit 1fbdd2e — Cloud Run forwards the
+ * Authorization header but lowercases the scheme to `bearer`).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -152,6 +155,22 @@ test('handleAttestRequest: non-Bearer Authorization header -> 401', async () => 
   };
   const result = await handleAttestRequest('Basic dXNlcjpwYXNz', deps);
   assert.equal(result.status, 401);
+});
+
+test('handleAttestRequest: matches the Bearer scheme case-insensitively — Cloud Run forwards it lowercased as "bearer" (real finding, docs/PLAN.md 1fbdd2e)', async () => {
+  const deps: AttestDeps = {
+    verifier: fakeVerifier({ email: 'ruv@ruv.net', emailVerified: true }),
+    lookupIdentity: async () => ({ orgMemberId: 'om-1', companyId: 'co-1' }),
+    mintAttestation: async (orgMemberId, companyId, humanIdentityRef) => fakeAttestation(orgMemberId, companyId, humanIdentityRef),
+  };
+  const lowercase = await handleAttestRequest('bearer real-google-token', deps);
+  assert.equal(lowercase.status, 200);
+
+  const mixedCase = await handleAttestRequest('BeArEr real-google-token', deps);
+  assert.equal(mixedCase.status, 200);
+
+  const upperCase = await handleAttestRequest('BEARER real-google-token', deps);
+  assert.equal(upperCase.status, 200);
 });
 
 test('handleAttestRequest: the returned attestation names google:<email> as humanIdentityRef, never the client-supplied token', async () => {

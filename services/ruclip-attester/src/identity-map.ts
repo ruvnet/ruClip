@@ -8,20 +8,34 @@
  * against this one named secret, by whoever already holds deploy/secret-edit
  * authority over this GCP project.
  *
- * Same GCP Secret Manager discipline as `credential-issuer.ts`'s key read
- * (`execFile` with an argument array — never a shell string — never
- * logged, never written to disk, no hardcoded secret name/project). Resolved
- * fresh on a short in-memory TTL rather than cached indefinitely (§3.2) —
- * a revoked mapping entry should stop being honored within one TTL window,
- * not require a process restart.
+ * **Real-behavior correction from LIVE deployment testing (2026-09-02,
+ * this session), not from reading source**: this module originally read
+ * the secret by shelling out to the `gcloud` CLI, mirroring
+ * `credential-issuer.ts`'s own discipline. Deployed to the real
+ * `ruclip-attester` Cloud Run service and got `spawn gcloud ENOENT` —
+ * confirmed via the service's own Cloud Run logs, not assumed. The
+ * `node:20-slim` container this service runs in has NO `gcloud` CLI
+ * installed at all — `credential-issuer.ts`'s shell-out pattern is correct
+ * for ITS callers (this repo's own dev/CI/publish environment, which does
+ * have `gcloud` on `PATH`, per root `CLAUDE.md`'s documented npm-publish
+ * flow) but cannot work inside a server-side Cloud Run container with no
+ * CLI and no interactive `gcloud` session. The correct mechanism for a
+ * Cloud Run service reading its OWN secrets is the official
+ * `@google-cloud/secret-manager` client library, which authenticates via
+ * Application Default Credentials — the service's own runtime service
+ * account, automatically, no `gcloud` binary needed. Still: never logged,
+ * never written to disk, no hardcoded secret name/project.
  */
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 
-const execFileAsync = promisify(execFile);
+let secretManagerClient: SecretManagerServiceClient | null = null;
+function getSecretManagerClient(): SecretManagerServiceClient {
+  secretManagerClient ??= new SecretManagerServiceClient();
+  return secretManagerClient;
+}
 
 export interface IdentityMapConfig {
-  /** Test/dev-only escape hatch — the raw mapping JSON, bypassing the GCP Secret Manager shell-out entirely. */
+  /** Test/dev-only escape hatch — the raw mapping JSON, bypassing the GCP Secret Manager client entirely. */
   mapJson?: string;
   /** Overrides RUCLIP_ATTESTER_IDENTITY_MAP_SECRET. */
   secretName?: string;
@@ -47,19 +61,19 @@ async function resolveIdentityMapJson(config?: IdentityMapConfig): Promise<strin
     );
   }
   try {
-    const { stdout } = await execFileAsync('gcloud', [
-      'secrets',
-      'versions',
-      'access',
-      'latest',
-      `--secret=${secretName}`,
-      `--project=${secretProject}`,
-    ]);
-    return stdout.trim();
+    const [response] = await getSecretManagerClient().accessSecretVersion({
+      name: `projects/${secretProject}/secrets/${secretName}/versions/latest`,
+    });
+    const data = response.payload?.data;
+    if (data === undefined || data === null) {
+      throw new Error('Secret Manager returned no payload data');
+    }
+    return Buffer.from(data).toString('utf8').trim();
   } catch (err) {
     throw new Error(
       `Failed to read the identity-mapping secret from GCP Secret Manager (secret '${secretName}', project ` +
-        `'${secretProject}') — is gcloud authenticated and the secret provisioned?`,
+        `'${secretProject}') — is the service's own runtime service account granted access, and is the secret ` +
+        'provisioned?',
       { cause: err },
     );
   }

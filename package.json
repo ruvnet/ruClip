@@ -24,27 +24,39 @@
     "attester:start": "npm run build && node dist/services/ruclip-attester/src/server.js"
   },
   "devDependencies": {
-    "typescript": "^5.6.3",
     "@types/node": "^20.14.15",
-    "radio-moe": "^0.3.1"
-  },
-  "dependencies": {
-    "google-auth-library": "^10.9.1"
+    "radio-moe": "^0.3.1",
+    "typescript": "^5.6.3"
   },
   "peerDependencies": {
-    "ruflo": "*",
-    "metaharness": "*",
-    "ruvector": "*",
+    "@metaharness/radio": "*",
     "agentbbs": "*",
+    "metaharness": "*",
     "radio-moe": "*",
-    "@metaharness/radio": "*"
+    "ruflo": "*",
+    "ruvector": "*"
   },
   "peerDependenciesMeta": {
-    "ruflo": { "optional": false },
-    "metaharness": { "optional": false },
-    "ruvector": { "optional": false },
-    "agentbbs": { "optional": true },
-    "radio-moe": { "optional": false },
-    "@metaharness/radio": { "optional": true }
+    "ruflo": {
+      "optional": false
+    },
+    "metaharness": {
+      "optional": false
+    },
+    "ruvector": {
+      "optional": false
+    },
+    "agentbbs": {
+      "optional": true
+    },
+    "radio-moe": {
+      "optional": false
+    },
+    "@metaharness/radio": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@google-cloud/secret-manager": "^7.0.0"
   }
 }

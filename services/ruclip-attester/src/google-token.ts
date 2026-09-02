@@ -1,50 +1,51 @@
 /**
  * Google ID token verification for `ruclip-attester`'s `/v1/attest` handler
  * (HUMAN-CREDENTIAL-ISSUANCE-PRODUCER.md §4 step 2). This is the
- * app-level, in-process re-verification of the SAME bearer token Cloud
- * Run's own IAM invoker check already used to authorize the call —
- * deliberately not redundant: Cloud Run's decision answers "is this caller
- * allowed to invoke me," but the caller's actual identity claims (the
- * `email` field) are only available to app code that independently
- * decodes/verifies the token itself.
+ * app-level, in-process extraction of the SAME bearer token Cloud Run's
+ * own IAM invoker check already used to authorize the call — deliberately
+ * not redundant: Cloud Run's decision answers "is this caller allowed to
+ * invoke me," but the caller's actual identity claims (the `email` field)
+ * are only available to app code that independently decodes the token
+ * itself.
  *
- * Real behavior confirmed by reading `google-auth-library@10.9.1`'s actual
- * `OAuth2Client.verifyIdTokenAsync`/`verifySignedJwtWithCertsAsync` source
- * directly (not just its `.d.ts`), same "check, don't assume" discipline
- * `autogenous-client.ts` used for the `--audiences` flag correction:
+ * **Real-behavior correction from LIVE deployment testing (2026-09-01,
+ * team-lead — docs/PLAN.md commit `1fbdd2e`), not from reading source this
+ * time**: this module originally cryptographically re-verified the token
+ * via `google-auth-library`'s `OAuth2Client.verifyIdToken`. Against a real
+ * deployed `ruclip-attester` behind Cloud Run's own front-end proxy, that
+ * call can NEVER succeed — **Cloud Run replaces the forwarded token's
+ * signature segment with the literal string `SIGNATURE_REMOVED_BY_GOOGLE`**
+ * before handing the request to the container. The earlier local test
+ * (hitting the compiled server directly, bypassing Cloud Run's proxy) used
+ * a genuine, un-proxied Google token, which is why it passed — that path
+ * is structurally different from every real production request.
  *
- * 1. **Audience is deliberately NOT checked here.** `verifyIdToken`'s
- *    `audience` option is only enforced `if (typeof requiredAudience !==
- *    'undefined' && requiredAudience !== null)` — passing no `audience`
- *    skips that check entirely, confirmed in the library's own source. This
- *    is the right call, not an oversight: `RUCLIP-ATTESTER-URL`'s own
- *    §0.3-confirmed finding is that `gcloud auth print-identity-token`
- *    (bare, no `--audiences`) produces a token whose `aud` claim is
- *    Google's own fixed gcloud-CLI OAuth client id, NOT this service's URL
- *    — requiring `audience` here would make every real login fail. The
- *    actual per-service authorization boundary is Cloud Run's own IAM
- *    invoker check (§3.1), which authorizes by caller identity/signature,
- *    not by the token's `aud` claim — this layer's job is purely to
- *    extract a reliable, signature-verified `email`/`email_verified` claim
- *    from an already-Cloud-Run-authorized request, not to re-gate "was
- *    this token meant for me."
- * 2. `verifyIdToken` fetches Google's real federated signon certs (a
- *    network call to Google) BEFORE parsing the token at all — confirmed in
- *    `verifyIdTokenAsync`'s own source (`getFederatedSignonCertsAsync()`
- *    runs first, unconditionally). This means even a malformed-token
- *    rejection is not exercisable offline — this module's REAL behavior
- *    against Google's live endpoint has NOT been covered by this repo's own
- *    test suite (network-dependent, would be flaky/environment-dependent in
- *    CI) — only the `GoogleIdTokenVerifier` interface's CONTRACT is
- *    covered, via `handleAttestRequest`'s own tests against a fake
- *    implementation. Flagged honestly, not hidden, matching this project's
- *    "confirmed vs still assumed" discipline for every other live-service
- *    integration point.
- * 3. Expiry (`exp`) and issuer (`iss`, defaults to Google's real
- *    `accounts.google.com`/`https://accounts.google.com`) ARE enforced by
- *    the library unconditionally — no extra code needed here for those.
+ * **This is Cloud Run's own standard, documented pattern for
+ * `--no-allow-unauthenticated` services, not a gap to route around**: the
+ * platform's IAM invoker check (§3.1) IS the real authentication boundary
+ * — a request cannot reach this container at all without already passing
+ * it. The redacted, forwarded token exists purely so app code can read
+ * identity claims from it, not to re-verify them a second time. So this
+ * module deliberately does NOT verify the signature — it decodes the
+ * payload and applies structural sanity checks instead:
+ * 1. Exactly 3 dot-separated segments (well-formed JWT shape).
+ * 2. `iss` is exactly `accounts.google.com` or `https://accounts.google.com`
+ *    (Google's real, documented ID token issuer values).
+ * 3. `exp` (if present) is in the future — cheap, honest extra sanity;
+ *    Cloud Run's own IAM check already gates freshness as part of
+ *    authorizing the call, so this is defense in depth, not the real
+ *    check.
+ * Then extracts `email`/`email_verified` — unaffected by the signature
+ * redaction, since Cloud Run only replaces the signature segment, not the
+ * payload.
+ *
+ * **Audience is still deliberately NOT checked** (unchanged from the
+ * earlier finding, unrelated to this fix): a bare
+ * `gcloud auth print-identity-token` produces a token whose `aud` claim is
+ * Google's own fixed gcloud-CLI OAuth client id, not this service's URL —
+ * requiring `audience` here would make every real login fail regardless of
+ * signature handling.
  */
-import { OAuth2Client, type TokenPayload } from 'google-auth-library';
 
 export interface GoogleIdTokenClaims {
   email: string;
@@ -58,26 +59,50 @@ export class GoogleIdTokenVerificationError extends Error {
   }
 }
 
-/** Injectable — `handleAttestRequest` (attest-handler.ts) depends on this interface, not the concrete google-auth-library wiring, so tests can simulate expired/malformed/wrong-issuer outcomes without a live network call. */
+/** Injectable — `handleAttestRequest` (attest-handler.ts) depends on this interface, not the concrete decoding logic, so tests can simulate malformed/expired/wrong-issuer outcomes precisely. */
 export interface GoogleIdTokenVerifier {
   verify(idToken: string): Promise<GoogleIdTokenClaims>;
 }
 
-/** The real, google-auth-library-backed verifier — see file header for what's confirmed vs. not yet exercised live. */
-export class RealGoogleIdTokenVerifier implements GoogleIdTokenVerifier {
-  private readonly client = new OAuth2Client();
+const GOOGLE_ISSUERS = new Set(['accounts.google.com', 'https://accounts.google.com']);
 
+interface DecodedGooglePayload {
+  iss?: string;
+  email?: string;
+  email_verified?: boolean;
+  exp?: number;
+}
+
+/**
+ * The real, deployed verifier — decodes without cryptographic signature
+ * verification, per this file's own header. See file header for the full
+ * finding and reasoning behind why signature verification is correctly
+ * absent here, not a gap.
+ */
+export class RealGoogleIdTokenVerifier implements GoogleIdTokenVerifier {
   async verify(idToken: string): Promise<GoogleIdTokenClaims> {
-    let payload: TokenPayload | undefined;
+    const segments = idToken.split('.');
+    if (segments.length !== 3) {
+      throw new GoogleIdTokenVerificationError(`Malformed ID token: expected 3 dot-separated segments, got ${segments.length}`);
+    }
+
+    let payload: DecodedGooglePayload;
     try {
-      const ticket = await this.client.verifyIdToken({ idToken }); // no `audience` — see file header point 1
-      payload = ticket.getPayload();
+      payload = JSON.parse(Buffer.from(segments[1]!, 'base64url').toString('utf8')) as DecodedGooglePayload;
     } catch (err) {
-      throw new GoogleIdTokenVerificationError('Google ID token failed verification', err);
+      throw new GoogleIdTokenVerificationError('Malformed ID token: could not decode payload segment', err);
     }
-    if (!payload || !payload.email) {
-      throw new GoogleIdTokenVerificationError('Google ID token has no email claim');
+
+    if (!payload.iss || !GOOGLE_ISSUERS.has(payload.iss)) {
+      throw new GoogleIdTokenVerificationError(`ID token has an unexpected issuer: ${String(payload.iss)}`);
     }
+    if (typeof payload.exp === 'number' && payload.exp * 1000 <= Date.now()) {
+      throw new GoogleIdTokenVerificationError('ID token is expired');
+    }
+    if (!payload.email) {
+      throw new GoogleIdTokenVerificationError('ID token has no email claim');
+    }
+
     return { email: payload.email, emailVerified: payload.email_verified === true };
   }
 }

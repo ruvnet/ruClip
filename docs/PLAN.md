@@ -717,6 +717,64 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        service account with `roles/run.invoker` scoped to
        `ruclip-attester` — same open item already tracked for
        `autogenous-service` above.
+     - **Fixed and CONFIRMED LIVE (2026-09-02, coder stage, this round)**:
+       both bugs above. Rebuilt (`docker buildx build --platform linux/amd64`
+       — the earlier local build silently produced an arm64 manifest that
+       Cloud Run rejects, a real finding of its own, fixed by pinning the
+       platform explicitly), pushed to
+       `us-central1-docker.pkg.dev/ruv-dev/cloud-run-source-deploy/ruclip-attester`,
+       and redeployed the real `ruclip-attester` Cloud Run service twice
+       (once per fix round) — this is the verified working deploy path
+       recorded in the Dockerfile's own header now, not just a claim.
+       Confirmed via a real `curl` with this session's own
+       `gcloud auth print-identity-token` against the live URL: the
+       response moved from `{"error":"missing bearer token"}` (bug 1,
+       pre-fix) all the way to a `handleAttestRequest`-internal rejection
+       (post-fix) — i.e. the request now clears the Bearer-scheme check
+       AND the token decode/issuer/expiry checks and reaches the identity
+       lookup step, closing both bugs for real, not just in unit tests.
+     - **A third real bug found only by actually deploying and testing live
+       (not asked for, found anyway, per this project's standing "verify,
+       don't assume" discipline)**: `identity-map.ts`/`signing-key.ts` both
+       originally shelled out to the `gcloud` CLI (mirroring
+       `credential-issuer.ts`'s own discipline) — confirmed via the real
+       service's own Cloud Run logs that this throws `spawn gcloud ENOENT`,
+       because the `node:20-slim` container has no `gcloud` CLI installed
+       at all. `credential-issuer.ts`'s shell-out pattern is correct for
+       ITS callers (this repo's own dev/CI/publish environment, which does
+       have `gcloud` on `PATH`) but cannot work inside a server-side Cloud
+       Run container. Fixed by switching both files to the official
+       `@google-cloud/secret-manager@7.0.0` client library (Application
+       Default Credentials — the service's own runtime service account,
+       automatically; no CLI needed) — `credential-issuer.ts` itself
+       untouched, per standing instruction. Redeployed and reconfirmed
+       live: the `ENOENT` error is completely gone, replaced by a clean,
+       expected `PERMISSION_DENIED` on `secretmanager.versions.access` —
+       proof the SDK call now correctly reaches Secret Manager. New tests:
+       `google-token.test.ts` (7 tests) — a genuine bonus from the
+       signature-verification removal: the real `RealGoogleIdTokenVerifier`
+       decode logic is now pure/offline-testable for the first time
+       (previously only reachable via a live Google JWKS network call);
+       plus a case-insensitive-Bearer test and a stale-comment fix in
+       `attest-handler.test.ts`. 9 new tests (300 total, up from 291),
+       `tsc --strict` clean on both Node 20.20.2 and 22.22.1.
+     - **What's still blocking full live verification — an IAM grant this
+       session did NOT make unilaterally**: the service's current runtime
+       identity (`875130704813-compute@developer.gserviceaccount.com`, the
+       default compute SA — confirmed via `gcloud run services describe`)
+       has no `roles/secretmanager.secretAccessor` on either
+       `ruclip-attester-identity-map` or `ruclip-attester-signing-key`
+       (confirmed empty via `gcloud secrets get-iam-policy` on both, and no
+       project-level grant either). Granting IAM access on a live GCP
+       project is a real, if narrow, access-control change — treated the
+       same as the standing discipline around deploying new infrastructure
+       unilaterally, so this was NOT granted without asking. This is the
+       natural moment to fold in the dedicated-service-account item already
+       tracked two bullets up (`roles/run.invoker` scoping) — one service
+       account, both grants, rather than patching the default compute SA's
+       permissions piecemeal. Flagged to architect/team-lead; once granted,
+       the remaining end-to-end check (mapping hit → real 200 with a signed
+       attestation) can complete in a follow-up round.
    - The prerequisite bullets below (added 2026-09-01/02) describe exactly
      why 2b is needed — they remain accurate.
 

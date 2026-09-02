@@ -30,14 +30,25 @@ export type AttestResult =
   | { status: 401; body: { error: string } }
   | { status: 403; body: { error: string } };
 
+/**
+ * HTTP auth scheme names are case-insensitive per RFC 7235 — real-behavior
+ * finding from live deployment (docs/PLAN.md, commit 1fbdd2e): Cloud Run's
+ * front-end forwards the Authorization header but lowercases the scheme to
+ * `bearer`. A literal `startsWith('Bearer ')` check 401s every real,
+ * IAM-authorized call. Matches the scheme case-insensitively; the token
+ * itself (everything after the scheme) is untouched.
+ */
+const BEARER_SCHEME_PATTERN = /^bearer\s+(.+)$/i;
+
 export async function handleAttestRequest(
   authorizationHeader: string | undefined | null,
   deps: AttestDeps,
 ): Promise<AttestResult> {
-  if (!authorizationHeader || !authorizationHeader.startsWith('Bearer ')) {
+  const schemeMatch = authorizationHeader ? BEARER_SCHEME_PATTERN.exec(authorizationHeader) : null;
+  if (!schemeMatch) {
     return { status: 401, body: { error: 'missing bearer token' } };
   }
-  const idToken = authorizationHeader.slice('Bearer '.length).trim();
+  const idToken = schemeMatch[1]!.trim();
   if (!idToken) {
     return { status: 401, body: { error: 'missing bearer token' } };
   }

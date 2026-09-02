@@ -7,25 +7,41 @@
  * issuer minting a credential from an already-verified event) and must
  * never share a key or a secret.
  *
- * Same GCP Secret Manager discipline and the same real `radio-moe`
- * signing-contract reproduction as `credential-issuer.ts` (`PeerIdentity`
- * cannot be reconstructed from a stored key — see that file's own header
- * for the full finding; this signs directly via `node:crypto` against a
- * durably-stored keypair, reproducing `signFrame`'s exact byte contract via
- * `radio-moe`'s own exported `canonicalBytes`, so verification via real
- * `radio-moe` `verifyFrame` on the consumer side is completely untouched).
+ * Same real `radio-moe` signing-contract reproduction as
+ * `credential-issuer.ts` (`PeerIdentity` cannot be reconstructed from a
+ * stored key — see that file's own header for the full finding; this
+ * signs directly via `node:crypto` against a durably-stored keypair,
+ * reproducing `signFrame`'s exact byte contract via `radio-moe`'s own
+ * exported `canonicalBytes`, so verification via real `radio-moe`
+ * `verifyFrame` on the consumer side is completely untouched).
+ *
+ * **Real-behavior correction from LIVE deployment testing (2026-09-02,
+ * this session)**: originally read the secret by shelling out to the
+ * `gcloud` CLI, mirroring `credential-issuer.ts`'s own discipline —
+ * confirmed via the real deployed service's own Cloud Run logs that this
+ * fails with `spawn gcloud ENOENT`, because the `node:20-slim` container
+ * has no `gcloud` CLI at all. See `identity-map.ts`'s own header for the
+ * full finding (same root cause, same fix): a server-side Cloud Run
+ * process reads its own secrets via the official
+ * `@google-cloud/secret-manager` client library (Application Default
+ * Credentials — the service's own runtime service account, automatically),
+ * not by shelling out to a CLI that only exists in interactive/CI
+ * environments. Still: never logged, never persisted to disk.
  */
 import { randomUUID, createPrivateKey, createPublicKey, sign as edSign, type KeyObject } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import { attestationFrame, type HumanIdentityAttestation } from '../../../src/control-plane/authorization/human-identity-attestation.js';
 
-const execFileAsync = promisify(execFile);
+let secretManagerClient: SecretManagerServiceClient | null = null;
+function getSecretManagerClient(): SecretManagerServiceClient {
+  secretManagerClient ??= new SecretManagerServiceClient();
+  return secretManagerClient;
+}
 
 const DEFAULT_TTL_SECONDS = 15 * 60; // matches HumanIdentityAttestation's own default (HUMAN-CREDENTIAL-ISSUANCE.md)
 
 export interface AttesterSigningKeyConfig {
-  /** Test/dev-only escape hatch — a PKCS8 PEM Ed25519 private key, bypassing the GCP Secret Manager shell-out entirely. Never logged. */
+  /** Test/dev-only escape hatch — a PKCS8 PEM Ed25519 private key, bypassing the GCP Secret Manager client entirely. Never logged. */
   privateKeyPem?: string;
   /** Overrides RUCLIP_ATTESTER_SIGNING_SECRET. */
   secretName?: string;
@@ -46,19 +62,19 @@ async function resolvePrivateKeyPem(config?: AttesterSigningKeyConfig): Promise<
     );
   }
   try {
-    const { stdout } = await execFileAsync('gcloud', [
-      'secrets',
-      'versions',
-      'access',
-      'latest',
-      `--secret=${secretName}`,
-      `--project=${secretProject}`,
-    ]);
-    return stdout.trim();
+    const [response] = await getSecretManagerClient().accessSecretVersion({
+      name: `projects/${secretProject}/secrets/${secretName}/versions/latest`,
+    });
+    const data = response.payload?.data;
+    if (data === undefined || data === null) {
+      throw new Error('Secret Manager returned no payload data');
+    }
+    return Buffer.from(data).toString('utf8').trim();
   } catch (err) {
     throw new Error(
       `Failed to read the attester signing key from GCP Secret Manager (secret '${secretName}', project ` +
-        `'${secretProject}') — is gcloud authenticated and the secret provisioned?`,
+        `'${secretProject}') — is the service's own runtime service account granted access, and is the secret ` +
+        'provisioned?',
       { cause: err },
     );
   }
