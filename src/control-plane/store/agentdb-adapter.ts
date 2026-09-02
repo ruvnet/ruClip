@@ -310,6 +310,39 @@ export async function recallGoal(
   return recallByKey<Goal>(goalKey(companyId, goalId), 'semantic', config);
 }
 
+/**
+ * Broad, client-side-filtered scan of every persisted Goal for a company —
+ * RUCLIP-DASHBOARD.md §1's real gap (no existing primitive lists Goals
+ * scoped to a company; only exact-id `recallGoal` existed). Follows
+ * `listApprovalTransitionsForCompany`'s exact established pattern: a
+ * `agentdb_hierarchical-recall` text query over the tier Goals actually
+ * live in (`semantic`, per `persistGoal`), `topK: 200`, skip malformed
+ * entries rather than fail the whole scan. Same "list broadly, filter
+ * client-side" trade-off, same not-exhaustive-at-large-scale caveat — see
+ * that function's own header comment.
+ */
+export async function listGoalsForCompany(companyId: string, config?: AgentDbAdapterConfig): Promise<Goal[]> {
+  assertSafeId(companyId, 'companyId');
+  const result = await callTool<{ results?: Array<{ value?: string }> }>(
+    'agentdb_hierarchical-recall',
+    { query: `ruclip:company:${companyId} goal`, tier: 'semantic', topK: 200 },
+    config,
+  );
+  const goals: Goal[] = [];
+  for (const r of result.results ?? []) {
+    if (typeof r.value !== 'string') continue;
+    try {
+      const parsed = JSON.parse(r.value) as Partial<Goal>;
+      if (parsed && typeof parsed.id === 'string' && parsed.companyId === companyId) {
+        goals.push(parsed as Goal);
+      }
+    } catch {
+      // skip malformed entries rather than fail the whole scan
+    }
+  }
+  return goals;
+}
+
 // --- Issue ---------------------------------------------------------------
 
 /**
@@ -591,6 +624,44 @@ export async function recallIssue(
   return (
     (await recallByKey<Issue>(key, 'working', config)) ?? (await recallByKey<Issue>(key, 'episodic', config))
   );
+}
+
+/**
+ * Broad, client-side-filtered scan of every persisted Issue for one Goal —
+ * RUCLIP-DASHBOARD.md §1's real gap (no existing primitive lists Issues
+ * scoped to a goal; only exact-id `recallIssue` existed). Follows
+ * `listApprovalTransitionsForCompany`'s exact established pattern: scans
+ * both tiers an Issue can live in (`tierForIssueStatus` — `working` while
+ * open/in_progress/blocked, `episodic` once done/cancelled), `topK: 200`
+ * per tier, skip malformed entries rather than fail the whole scan.
+ */
+export async function listIssuesForGoal(
+  companyId: string,
+  goalId: string,
+  config?: AgentDbAdapterConfig,
+): Promise<Issue[]> {
+  assertSafeId(companyId, 'companyId');
+  assertSafeId(goalId, 'goalId');
+  const issues: Issue[] = [];
+  for (const tier of ['working', 'episodic'] as const) {
+    const result = await callTool<{ results?: Array<{ value?: string }> }>(
+      'agentdb_hierarchical-recall',
+      { query: `ruclip:company:${companyId}:goal:${goalId} issue`, tier, topK: 200 },
+      config,
+    );
+    for (const r of result.results ?? []) {
+      if (typeof r.value !== 'string') continue;
+      try {
+        const parsed = JSON.parse(r.value) as Partial<Issue>;
+        if (parsed && typeof parsed.id === 'string' && parsed.goalId === goalId) {
+          issues.push(parsed as Issue);
+        }
+      } catch {
+        // skip malformed entries rather than fail the whole scan
+      }
+    }
+  }
+  return issues;
 }
 
 /** Parallel to recallIssue, keyed via approvalTransitionKey — used by Guard C to re-verify self-approval against persisted state. */
@@ -1021,6 +1092,51 @@ export async function listDueHeartbeats(companyId: string, config?: AgentDbAdapt
   return schedules.filter((s) => s.status === 'active' && s.nextFireAt <= nowIso);
 }
 
+/**
+ * RUCLIP-DASHBOARD.md §5 deviation, found while implementing, not silently
+ * skipped: the design's §1 claims `listDueHeartbeats` "supplies heartbeat
+ * status directly — no gap there," but that function's own client-side
+ * filter (`status === 'active' && nextFireAt <= now`) actively EXCLUDES a
+ * `status: 'paused'` schedule — exactly the state `fireHeartbeat`'s
+ * `pauseAndPersist` sets on `application_budget_blocked`/
+ * `operating_budget_blocked` (`heartbeat/fire-heartbeat.ts`). §2's own
+ * requirement ("blocked outcomes shown plainly, not hidden") is directly
+ * contradicted by reusing `listDueHeartbeats` as literally instructed — the
+ * single most dashboard-relevant heartbeat state (a currently-blocked one)
+ * would silently never appear. This broader listing exists for that reason:
+ * every heartbeat for a company regardless of status or due-ness, scanning
+ * both tiers a schedule can live in (`tierForHeartbeatStatus` — `working`
+ * while active/paused, `episodic` once cancelled). `listDueHeartbeats`
+ * itself is untouched (still used by whatever actually fires heartbeats) —
+ * this is a new, separate function, not a refactor of it.
+ */
+export async function listHeartbeatsForCompany(
+  companyId: string,
+  config?: AgentDbAdapterConfig,
+): Promise<HeartbeatSchedule[]> {
+  assertSafeId(companyId, 'companyId');
+  const schedules: HeartbeatSchedule[] = [];
+  for (const tier of ['working', 'episodic'] as const) {
+    const result = await callTool<{ results?: Array<{ value?: string }> }>(
+      'agentdb_hierarchical-recall',
+      { query: `ruclip:company:${companyId} heartbeat`, tier, topK: 100 },
+      config,
+    );
+    for (const r of result.results ?? []) {
+      if (typeof r.value !== 'string') continue;
+      try {
+        const parsed = JSON.parse(r.value) as Partial<HeartbeatSchedule>;
+        if (parsed && typeof parsed.id === 'string' && parsed.companyId === companyId) {
+          schedules.push(parsed as HeartbeatSchedule);
+        }
+      } catch {
+        // skip malformed entries rather than fail the whole scan
+      }
+    }
+  }
+  return schedules;
+}
+
 // --- Operating-spend circuit breaker (HEARTBEATS-AND-COMMS.md §4, Finding C) -
 
 /** ruClip's OWN namespace via memory_store/memory_retrieve/memory_list — deliberately not the shared `cost-tracking` namespace ruflo-cost-tracker itself uses. */
@@ -1040,7 +1156,13 @@ export interface OperatingBudgetConfig {
   thresholds: OperatingBudgetThresholds;
 }
 
-const DEFAULT_OPERATING_BUDGET_THRESHOLDS: OperatingBudgetThresholds = {
+/**
+ * Exported (not module-private) so RUCLIP-DASHBOARD.md §2's Company budget
+ * display can reuse the exact same alert-ladder thresholds this circuit
+ * breaker uses, rather than duplicating the 50/75/90/100% figures — see
+ * dashboard/build-snapshot.ts.
+ */
+export const DEFAULT_OPERATING_BUDGET_THRESHOLDS: OperatingBudgetThresholds = {
   info: 0.5,
   warning: 0.75,
   critical: 0.9,
@@ -1078,7 +1200,8 @@ export async function setOperatingBudget(
   );
 }
 
-function operatingBudgetLevel(utilizationPct: number, thresholds: OperatingBudgetThresholds): OperatingBudgetLevel {
+/** Exported alongside DEFAULT_OPERATING_BUDGET_THRESHOLDS — see that constant's own comment. */
+export function operatingBudgetLevel(utilizationPct: number, thresholds: OperatingBudgetThresholds): OperatingBudgetLevel {
   if (utilizationPct >= thresholds.hardStop) return 'HARD_STOP';
   if (utilizationPct >= thresholds.critical) return 'CRITICAL';
   if (utilizationPct >= thresholds.warning) return 'WARNING';

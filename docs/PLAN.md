@@ -511,6 +511,55 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
    - **Phase 2a (this iteration) — read-only company board**: Company/
      Goals/Issues visibility, heartbeat status, no write actions, no human
      identity needed. See `docs/design/RUCLIP-DASHBOARD.md`.
+     - **Delivered 2026-09-02**: `store/agentdb-adapter.ts` gained
+       `listGoalsForCompany`/`listIssuesForGoal` (RUCLIP-DASHBOARD.md §1's
+       real gap — no primitive listed Goals/Issues scoped to a
+       company/goal before this slice), following
+       `listApprovalTransitionsForCompany`'s exact established pattern
+       (broad `agentdb_hierarchical-recall` query, tier scan, malformed-entry
+       skip). `dashboard/build-snapshot.ts`'s `buildDashboardSnapshot`
+       composes `recallCompany` + those two + `getChildIssueIds`/
+       `getBlockerIssueIds`/`recallOrgMember` resolution into one
+       `DashboardSnapshot` plain-data object, embedded as static data in a
+       published Claude Artifact (no `capabilities` declared, per §0).
+       `operatingBudgetLevel`/`DEFAULT_OPERATING_BUDGET_THRESHOLDS` were
+       exported from the adapter (previously module-private) so the
+       Company budget display genuinely reuses `checkOperatingBudget`'s own
+       50/75/90/100% alert ladder rather than duplicating the figures. 5
+       new tests (214 total, up from 209), `tsc --strict` clean.
+     - **One deviation from a literal reading of §1, found while
+       implementing, not silently applied**: §1 states `listDueHeartbeats`
+       "supplies heartbeat status directly — no gap there," but that
+       function's own filter (`status === 'active' && nextFireAt <= now`)
+       actively EXCLUDES a `status: 'paused'` schedule — exactly the state
+       `fireHeartbeat`'s `pauseAndPersist` sets on a budget-blocked
+       heartbeat. §2's own requirement ("blocked outcomes shown plainly,
+       not hidden") is directly contradicted by reusing `listDueHeartbeats`
+       as literally instructed — the single most dashboard-relevant
+       heartbeat state would silently never appear. Added a new, separate
+       `listHeartbeatsForCompany` (every schedule for a company regardless
+       of status/due-ness, scanning both tiers a schedule can live in) and
+       used that instead; `listDueHeartbeats` itself is untouched. Covered
+       by a dedicated regression test proving the blocked/paused schedule
+       is present where `listDueHeartbeats` would have dropped it.
+     - **The Artifact page**: published at
+       `https://claude.ai/code/artifact/f3356590-2d69-4452-af3a-df0bf1f20e56`
+       ("Meridian Labs Board") with representative sample data matching
+       `DashboardSnapshot`'s exact shape verbatim — swapping in a real
+       `buildDashboardSnapshot()` result at publish time is the only change
+       needed for a live company. Loaded `artifact-design` (utilitarian/
+       dashboard treatment — summary before detail, state encoded in pill
+       form not color alone) and `dataviz` (validated status palette: the
+       skill's own reference `good`/`warning`/`serious`/`critical` hexes,
+       fixed across both themes per that palette's own "never themed" rule;
+       legibility comes from a colored dot + neutral-ink label, never
+       colored text, since the reference palette's warning/serious steps
+       are sub-3:1 by design and rely on the icon+label pairing as
+       mitigation) before writing it, per that tooling's own rules. No
+       runtime `capabilities` declared, matching §0's own conclusion. A
+       blocked heartbeat and a blocked issue are both included in the
+       sample data specifically to prove §2's "shown plainly" requirement
+       renders correctly, not just parses correctly.
    - **Phase 2b (separate, later, not designed yet)** — human
      `ActorCredential` issuance + dashboard write actions (approve/reject,
      consent-setting). Not a small gap-fill on top of 2a — needs a real
