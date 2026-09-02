@@ -304,9 +304,43 @@ Handler steps:
      in the future if present) in place of signature verification —
      documented in the file's own header as a deliberate, understood
      choice, not a gap.
+   - **Correction #3 (2026-09-02) — decode-without-verify itself was a
+     real, complete identity-impersonation exploit, not just a documented
+     trade-off**: `ruclip-tester` demonstrated concretely (not just in
+     prose) that decode-only verification checks a JWT-shaped token's
+     segment count, never its content — a completely fabricated token
+     (never touched by Google) was accepted and minted a real, validly-
+     signed `HumanIdentityAttestation` for an attacker-chosen identity,
+     with no misconfiguration required. `ruclip-security` escalated rather
+     than signed off, verified against Google's own documentation, and
+     recommended Identity-Aware Proxy (IAP) as the real fix; team-lead
+     authorized it in two steps (code first through the full pipeline,
+     live IAP enablement second, as a separate dedicated task). This
+     REPLACES Correction #2's decode-without-verify design entirely:
+     `google-token.ts` now performs real ES256 cryptographic verification
+     of the `x-goog-iap-jwt-assertion` header — a channel IAP itself signs
+     and Cloud Run's proxy never touches or redacts, unlike the old
+     `Authorization` header — against IAP's own published public keys
+     (`OAuth2Client#getIapPublicKeysAsync()`/`#verifySignedJwtWithCertsAsync()`,
+     confirmed against the real installed `google-auth-library@10.9.1`
+     source, not a docs sample). The 3-segment/`iss`/`exp` structural
+     sanity checks from Correction #2 are gone — this is real signature
+     verification, not decode-plus-heuristics. IAP's JWT has no
+     `email_verified` claim (unlike a classic Google Sign-In ID token); a
+     cryptographically-verified IAP `email` claim now maps to
+     `emailVerified: true` unconditionally, documented as a deliberate
+     mapping, not an observed value. Step 2 — enabling IAP on the live
+     service and confirming the real project number for
+     `RUCLIP_ATTESTER_IAP_AUDIENCE` — has not happened yet; the identity-
+     mapping secret stays empty (hard gate) until it does.
 3. Require `email_verified === true` on the token's claims (mirrors
    `cognitum-one/slack`'s own cited discipline of requiring a *verified*
-   mailbox, not just workspace membership).
+   mailbox, not just workspace membership). **Stale after Correction #3**:
+   IAP's JWT carries no `email_verified` claim to check — the handler's
+   `emailVerified` gate is still present but now vestigial, since
+   `google-token.ts` only ever returns `true` for a cryptographically-
+   verified token (see Correction #3). The real "is this email verified"
+   guarantee now comes from IAP's own signature check, not this field.
 4. Look up `email` in `ruclip-attester-identity-map` (§3.2). Not found →
    `403`, generic message ("no verified employee mapping for this
    identity") — no `orgMemberId`/`companyId` values leaked either way.
@@ -419,6 +453,14 @@ requirement (§3), not glossed over.
   item (§3.1) should be folded into the same IAM change — one new service
   account, both grants — rather than patching the default compute SA
   piecemeal.
+- **Still genuinely open (2026-09-02) — IAP step 2**: enabling IAP on the
+  live `ruclip-attester` service (granting IAP's service agent
+  `roles/run.invoker`, granting real users `roles/iap.httpsResourceAccessor`)
+  and confirming the real `RUCLIP_ATTESTER_IAP_AUDIENCE` value (the
+  service's actual project number) against a genuinely IAP-issued JWT —
+  see §4 step 2's Correction #3. Not started. The identity-mapping secret
+  stays empty (hard gate, team-lead) until this step verifies working
+  end-to-end on the live service, not just in code review.
 - Phase 2a's own separate open question (no exportable Claude Artifact
   viewer identity — `RUCLIP-DASHBOARD.md`) is unaffected by this phase;
   the dashboard's own write-action auth story, if it ever needs one beyond
