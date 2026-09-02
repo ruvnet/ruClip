@@ -952,7 +952,17 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        `checkAndProposeBudgetMutation` — that integration point is a
        separate decision outside this slice's own file list (§7 names only
        the governance module + adapter functions), left for architect/
-       team-lead to schedule.
+       team-lead to schedule. **Confirmed deliberate, not a scope gap
+       (architect, 2026-09-02)**: `fireHeartbeat` is already-shipped,
+       heavily-tested, production-critical code; wiring a live network call
+       to an undeployed external service whose response-shape assumptions
+       (§2.6) aren't yet verified directly into that hot path, before
+       verification completes, would couple every heartbeat firing's
+       success to Autogenous's availability/correctness ahead of what's
+       actually confirmed — exactly the "ahead of what's verified" risk
+       this project has consistently avoided elsewhere. Wiring this call
+       site is deferred until after the §7 live-verification step passes,
+       not forgotten.
 6. **Phase 5 — Dream-machine nightly integration**: config + `/schedule`
    routine, first ledger rows. **Amended 2026-09-01**: rotation surface is
    codebase-only (§6) — no runtime `redblue` rotation here, that's Phase 4's
