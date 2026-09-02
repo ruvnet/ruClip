@@ -2015,11 +2015,25 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
       Added a `handoffClaim`-specific hardening while in the area (not a
       new scope item — a direct consequence of building the composite
       key correctly): asserts `from.companyId === to.companyId` before
-      building the key, since `deps.approver`/`deps.handoffTo` in
-      `applyApprovalTransition` are NOT independently companyId-checked
-      at that call site (confirmed by reading it — a real, pre-existing
-      gap, left as-is, out of Finding 1's scope, flagged here rather than
-      silently fixed or silently ignored).
+      building the key.
+      **Correction (2026-09-02, tester)**: this delivery originally
+      described `applyApprovalTransition`'s `deps.approver`/`deps.handoffTo`
+      as "NOT independently companyId-checked at that call site... a real,
+      pre-existing gap, left as-is, out of Finding 1's scope." That framing
+      is stale — ruclip-tester traced `applyApprovalTransition` in full and
+      found the `handoffClaim` change just above ALREADY closes it as a
+      side effect: `deps.approver`/`deps.handoffTo` are used in exactly one
+      place each, as `handoffClaim`'s `to` argument, with the already
+      company-verified `actor` as `from` — `handoffClaim`'s new
+      `from.companyId !== to.companyId` assertion runs before any key
+      construction or bridge call, so a cross-company approver/handoffTo is
+      rejected today, not left open. Confirmed with a real test, not just a
+      read-through: `tests/control-plane/cross-company-approver-verification.test.ts`
+      (commit `e7bd2cc`) calls `applyApprovalTransition('submit')` with a
+      `deps.approver` from a different company than the verified actor and
+      confirms `ClaimAuthorizationError` with zero `claims_handoff`/
+      persistence calls. Not a new vulnerability — the fix is more complete
+      than its own original delivery notes claimed.
       Regression coverage directly answering team-lead's ask: a new test
       simulates two companies (`company-a`/`company-b`) with an identical
       claimant string (`kind:id:role` collision) and the identical literal
