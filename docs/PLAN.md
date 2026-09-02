@@ -992,6 +992,21 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
        enforced, not just present in the code. Design doc updated to
        match (`docs/design/HUMAN-CREDENTIAL-ISSUANCE-PRODUCER.md`, commit
        `1c2f45d`, "Correction #3").
+     - **`ruclip-tester` independently verified (2026-09-02)**: re-ran the
+       suite themselves (311/311, `tsc --strict` clean) and independently
+       re-read the installed `google-auth-library@10.9.1` source rather
+       than trusting the coder's citations. No new gap found. Confirmed
+       the old `Authorization`/Bearer path is fully removed, not left as a
+       dormant fallback; called out the array-shaped-header rejection in
+       `server.ts` as a nice unprompted defensive touch; specifically
+       traced that `forged-token-trust-boundary.test.ts` still uses the
+       exact same forgery construction (not watered down to pass
+       trivially), now correctly rejected, and added their own scrutiny of
+       the wrong-audience-with-a-real-signature case. Assessment: real
+       cryptographic verification (independent of network/IAM topology)
+       plus the orthogonal `--allow-unauthenticated` CI guardrail closes
+       the forged-token exploit from two independent angles. Handed to
+       `ruclip-security` for the security-sensitivity pipeline stage.
    - The prerequisite bullets below (added 2026-09-01/02) describe exactly
      why 2b is needed — they remain accurate.
 
