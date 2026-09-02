@@ -83,6 +83,30 @@ adopting paperclip's own Node/React/Postgres stack:
 5. **Dashboard**: a Claude Artifact with runtime capabilities (multi-viewer
    state, saved documents) as v1, deferring a dedicated hosted web app
    unless Artifact capabilities prove insufficient.
+5a. **Amendment (2026-09-02, pre-acceptance)** — investigated the real
+   Claude Artifact runtime-capability contract (`artifact-capabilities`
+   skill, the platform's actual `claude.d.ts`/`db.d.ts`/`artifact.d.ts`
+   type definitions) rather than assuming point 5's phrasing held. Two
+   corrections:
+   - **"Live state" is corrected to periodically-republished snapshot
+     state** for the read-only company-board portion (Phase 2a,
+     `docs/design/RUCLIP-DASHBOARD.md`) — the `db` capability that would
+     give genuinely live multi-viewer sync is written to from inside a
+     page's own client-side JS, and ruClip has no publicly-reachable
+     endpoint for a page to fetch live state from. The `artifact`
+     capability's republish-on-change model (an agent with backend access
+     periodically republishes the board with current state embedded,
+     labeled with its publish time) is what's real and buildable today.
+   - **Point 5's own already-anticipated fallback is confirmed triggered,
+     not hypothetical**: no capability among the seven available to this
+     account (`artifact`, `db`, `downloads`, `mcp`, `room`, `sample`,
+     `self`) lets a page hand ruClip's backend a portable, verifiable proof
+     of human identity — Artifact capabilities have proven insufficient for
+     the write/approval/consent side specifically, per point 5's own
+     stated condition. That side (Phase 2b) needs "a dedicated hosted web
+     app" as point 5 already named — concretely, the Cloud Run path,
+     scoped in its own future design pass rather than folded into Phase 2a.
+     See `docs/PLAN.md` §8 Phase 2's split for the phased handling.
 6. **Nightly evolution**: integrate with `ruvnet/dream-machine` by
    generating a `dream.config.json` for `ruvnet/ruClip` and registering a
    `/schedule` cloud routine — the same mechanism already running nightly
