@@ -1782,6 +1782,17 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
     likely doesn't need the full tester→security→reviewer weight recent
     security work required — flagged to team-lead for a pipeline-weight
     call before implementing, not started unilaterally.
+  - **Team-lead approved (2026-09-02)**: agreed with all three findings and
+    the pipeline-weight call — coder → reviewer only, no tester/security
+    (no new trust boundary, no new external input, pure correctness-
+    preserving performance fix). Two things explicitly asked to be
+    verified, not just assumed: (1) the memoization cache is scoped
+    strictly per `buildDashboardSnapshot` invocation — a fresh cache each
+    call, never leaking across different companies or different calls (a
+    shared/global cache would be a real correctness bug, not a missed
+    optimization); (2) a test proving the call count actually drops as
+    measured (65→4 in the example above), not just that output is still
+    correct. Routed to `ruclip-coder`.
   - **`ruclip-metaharness`'s `.harness/bench.json` (Phase 3) stays
     correctness-only** — read all 6 tasks directly: every
     `successCriteria` is a pass/fail test outcome (`npm test` or a scoped
