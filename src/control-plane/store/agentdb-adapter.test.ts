@@ -213,6 +213,53 @@ test('recallCompany filters hierarchical-recall results to an exact key match', 
   assert.deepEqual(recalled, stored);
 });
 
+test('recallCompany finds the exact key even when many sibling records share its prefix (ruvnet/ruClip#5)', async () => {
+  // A seeded company quickly has more than ten records under ruclip:company:<id>
+  // (members, goal, issues, heartbeats). The old topK:10 page could omit the exact key.
+  const stored: Company = {
+    id: 'co-1',
+    name: 'Acme',
+    primaryGoalId: null,
+    budget: { total: 1000, spent: 0, currency: 'USD', period: '2026-09', hardStopThreshold: 0.9 },
+    status: 'active',
+    createdAt: now,
+    updatedAt: now,
+  };
+  const siblings = Array.from({ length: 11 }, (_, i) => ({
+    key: `ruclip:company:co-1:org-member:om-${i}`,
+    value: JSON.stringify({ id: `om-${i}` }),
+  }));
+  const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': () => ({
+      results: [...siblings, { key: 'ruclip:company:co-1', value: JSON.stringify(stored) }],
+    }),
+  });
+  const recalled = await recallCompany('co-1', config);
+  assert.deepEqual(recalled, stored);
+  const recallCall = calls.find((c) => c.toolName === 'agentdb_hierarchical-recall');
+  assert.ok((recallCall?.args.topK as number) >= 12, 'first recall page must be wider than the sibling count');
+});
+
+test('recallCompany widens the page when the first one is full without a match, and stops on a short page', async () => {
+  let pages = 0;
+  const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': (args: Record<string, unknown>) => {
+      pages += 1;
+      const topK = args.topK as number;
+      // First page: completely full of non-matching siblings. Second page: short, still no match.
+      const count = pages === 1 ? topK : 3;
+      return {
+        results: Array.from({ length: count }, (_, i) => ({ key: `ruclip:company:co-1:issue:i-${i}`, value: '{}' })),
+      };
+    },
+  });
+  const recalled = await recallCompany('co-1', config);
+  assert.equal(recalled, null);
+  const topKs = calls.filter((c) => c.toolName === 'agentdb_hierarchical-recall').map((c) => c.args.topK as number);
+  assert.equal(topKs.length, 2, 'one widening retry, then stop on the short page');
+  assert.ok(topKs[1]! > topKs[0]!, 'second page must be wider than the first');
+});
+
 test('recallCompany returns null when no exact key match is found', async () => {
   const { config } = mockBridge({
     'agentdb_hierarchical-recall': () => ({ results: [] }),
