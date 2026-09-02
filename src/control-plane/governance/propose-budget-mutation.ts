@@ -85,9 +85,41 @@ async function recordLevelObservation(
   return updated;
 }
 
-function hasConsecutiveWarningOrWorse(history: OperatingBudgetLevel[]): boolean {
+/**
+ * Security-hardening correction (security review round 9): the original
+ * version of this check was level-triggered — "are the last
+ * CONSECUTIVE_THRESHOLD readings all WARNING-or-worse right now" — which is
+ * true on every single reading for the entire duration of an ongoing
+ * incident, not just the reading where the pattern first became true.
+ * Since this v1 flow never actually applies the tightened threshold to
+ * Company.budget (only a real /v1/promote success would, Phase 4b, out of
+ * scope), the caller passes the identical currentHardStopThreshold on every
+ * check for as long as the underlying problem persists — so a sustained
+ * streak re-triggered a brand-new /v1/agl/admit + /v1/canary/new submission
+ * on EVERY reading after the 3rd, proposing the literal identical parent
+ * genome hash and threshold change already proposed, for what the
+ * governance service sees as duplicate proposals for the same incident.
+ * Confirmed exploitable by an independent test (4 consecutive WARNING
+ * readings produced 2 distinct triggers/mutation ids/admit+canary pairs).
+ *
+ * Fixed to be edge-triggered instead: the pattern must be true NOW and
+ * have been false immediately before the current CONSECUTIVE_THRESHOLD
+ * window began — i.e. this is the reading where the streak first crossed
+ * the threshold, not a continuation of an already-triggered one. A streak
+ * that never breaks (stays WARNING-or-worse indefinitely) now fires exactly
+ * once; a new incident (streak breaks back to OK/INFO, then WARNING+ again)
+ * correctly fires again as its own, genuinely new proposal.
+ */
+function isNewWarningStreak(history: OperatingBudgetLevel[]): boolean {
   if (history.length < CONSECUTIVE_THRESHOLD) return false;
-  return history.slice(-CONSECUTIVE_THRESHOLD).every((level) => WARNING_OR_WORSE.has(level));
+  const window = history.slice(-CONSECUTIVE_THRESHOLD);
+  if (!window.every((level) => WARNING_OR_WORSE.has(level))) return false;
+  const priorIndex = history.length - CONSECUTIVE_THRESHOLD - 1;
+  // No reading exists before the window (history is exactly THRESHOLD long,
+  // e.g. right after the rolling window itself first fills) — this is the
+  // earliest possible trigger for a genuinely first-seen incident.
+  if (priorIndex < 0) return true;
+  return !WARNING_OR_WORSE.has(history[priorIndex]!);
 }
 
 // --- Genome / Mutation construction ------------------------------------------
@@ -153,7 +185,7 @@ export async function checkAndProposeBudgetMutation(
   assertSafeId(companyId, 'companyId');
   const { level } = await checkOperatingBudget(companyId, storeConfig);
   const history = await recordLevelObservation(companyId, level, storeConfig);
-  if (!hasConsecutiveWarningOrWorse(history)) {
+  if (!isNewWarningStreak(history)) {
     return { triggered: false };
   }
 
