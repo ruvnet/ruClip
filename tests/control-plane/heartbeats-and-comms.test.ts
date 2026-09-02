@@ -135,14 +135,14 @@ function activeClaimFor(actor: OrgMember, issueId: string) {
 
 // --- heartbeatKey ------------------------------------------------------------
 
-test('heartbeatKey nests under the goal key for a goal target and the issue key for an issue target', () => {
+test('heartbeatKey is company-scoped for both goal and issue targets (bridge caps keys at 128 chars)', () => {
   assert.equal(
     heartbeatKey('co-1', { kind: 'goal', goalId: 'goal-1' }, 'hb-1'),
-    'ruclip:company:co-1:goal:goal-1:heartbeat:hb-1',
+    'ruclip:company:co-1:heartbeat:hb-1',
   );
   assert.equal(
     heartbeatKey('co-1', { kind: 'issue', goalId: 'goal-1', issueId: 'issue-1' }, 'hb-1'),
-    'ruclip:company:co-1:goal:goal-1:issue:issue-1:heartbeat:hb-1',
+    'ruclip:company:co-1:heartbeat:hb-1',
   );
 });
 

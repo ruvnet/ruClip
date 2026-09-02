@@ -162,7 +162,7 @@ ruclip:company:{companyId}
 ruclip:company:{companyId}:org-member:{orgMemberId}
 ruclip:company:{companyId}:goal:{goalId}
 ruclip:company:{companyId}:goal:{goalId}:issue:{issueId}
-ruclip:company:{companyId}:goal:{goalId}:issue:{issueId}:comment:{commentId}
+ruclip:company:{companyId}:comment:{commentId}            (record carries issueId; keys are capped at 128 chars by the bridge)
 ```
 
 ### 2.3 Causal edges

@@ -184,8 +184,8 @@ Keying, following the existing `companyKey`/`goalKey`/`issueKey`/
 `commentKey`/`approvalTransitionKey` convention in `store/agentdb-adapter.ts`:
 
 ```
-ruclip:company:{companyId}:goal:{goalId}:heartbeat:{heartbeatId}                       (target.kind: 'goal')
-ruclip:company:{companyId}:goal:{goalId}:issue:{issueId}:heartbeat:{heartbeatId}       (target.kind: 'issue')
+ruclip:company:{companyId}:heartbeat:{heartbeatId}   (both target kinds; `target` inside the record carries goalId/issueId —
+                                                      the bridge caps keys at 128 chars, so schedules are not nested under goal/issue)
 ```
 
 Hierarchical-store tier: `working` while `status === 'active' | 'paused'`

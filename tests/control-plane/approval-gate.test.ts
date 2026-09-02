@@ -405,7 +405,7 @@ test('applyApprovalTransition (submit, no witness): persists the transition, upd
     (c) => c.toolName === 'agentdb_hierarchical-store' && (c.args.key as string).includes(':approval-transition:'),
   );
   assert.ok(transitionStoreCall, 'expected the ApprovalTransition record to be persisted');
-  assert.equal(transitionStoreCall!.args.key, `${issueKeyStr}:approval-transition:${result.transition.id}`);
+  assert.equal(transitionStoreCall!.args.key, `ruclip:company:co-1:approval-transition:${result.transition.id}`);
 
   const issueStoreCall = calls.find(
     (c) => c.toolName === 'agentdb_hierarchical-store' && c.args.key === issueKeyStr,
