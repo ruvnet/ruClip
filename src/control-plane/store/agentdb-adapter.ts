@@ -81,6 +81,14 @@ import {
 } from '../authorization/claims-authorization.js';
 import { resolveVerifiedActor, type ActorAuthorization } from '../authorization/actor-credential.js';
 import { recomputeInteractionSignals } from '../employee-augmentation/interaction-profile.js';
+import type {
+  Mutation,
+  Genome,
+  AdmitResponse,
+  CanaryController,
+  Decision,
+  FitnessVector,
+} from '../governance/autogenous-client.js';
 import { AgentDbBridgeError, callTool, assertSafeId, type AgentDbAdapterConfig } from './bridge-client.js';
 
 // Re-exported so every existing `from '../store/agentdb-adapter.js'` import
@@ -146,6 +154,12 @@ export function heartbeatKey(companyId: string, target: HeartbeatTarget, heartbe
   assertSafeId(heartbeatId, 'heartbeatId');
   const base = target.kind === 'issue' ? issueKey(companyId, target.goalId, target.issueId) : goalKey(companyId, target.goalId);
   return `${base}:heartbeat:${heartbeatId}`;
+}
+
+/** AUTOGENOUS-RUNTIME-GOVERNANCE.md §6 keying — mirrors heartbeatKey's company-scoped nesting. */
+export function autogenousMutationKey(companyId: string, mutationId: string): string {
+  assertSafeId(mutationId, 'mutationId');
+  return `${companyKey(companyId)}:autogenous-mutation:${mutationId}`;
 }
 
 /** ADR-130 domain-prefixed node id for causal-edge / graph-query calls. */
@@ -1304,4 +1318,44 @@ export async function searchPatterns(
     config,
   );
   return (result.results ?? []).filter((r) => r.type === namespace);
+}
+
+// --- Autogenous runtime governance audit trail (AUTOGENOUS-RUNTIME-GOVERNANCE.md §6) ---
+
+/**
+ * ruClip's own audit record for one proposed Autogenous mutation —
+ * persisted the same way ApprovalTransition/HeartbeatSchedule already are.
+ * `controller` is null until `/v1/canary/new` succeeds. `observations` is
+ * append-only; each entry's `decision` is the real, externally-tagged
+ * `Decision` the service returned for that observation, not a paraphrase.
+ * `controller.audit` (copied verbatim on every update) is the service's own
+ * signed promotion/rollback log — this record does not invent a second
+ * witness mechanism, it durably stores the authoritative one (§6).
+ */
+export interface AutogenousMutationRecord {
+  id: string; // == mutation.id
+  companyId: string;
+  mutation: Mutation;
+  parentGenome: Genome;
+  admitResponse: AdmitResponse;
+  controller: CanaryController | null;
+  observations: Array<{ at: string; fitness: FitnessVector; decision: Decision }>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Single tier ('working') for the whole record lifecycle — this is a low-volume governance/audit entity, not a high-churn one like Issue, so no tier-migration rule is needed (none is specified by the design). */
+export async function persistAutogenousMutationRecord(
+  record: AutogenousMutationRecord,
+  config?: AgentDbAdapterConfig,
+): Promise<void> {
+  await storeAtTier(autogenousMutationKey(record.companyId, record.id), record, 'working', config);
+}
+
+export async function recallAutogenousMutationRecord(
+  companyId: string,
+  mutationId: string,
+  config?: AgentDbAdapterConfig,
+): Promise<AutogenousMutationRecord | null> {
+  return recallByKey<AutogenousMutationRecord>(autogenousMutationKey(companyId, mutationId), 'working', config);
 }

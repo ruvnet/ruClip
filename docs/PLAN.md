@@ -901,6 +901,58 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
      `CanaryController.audit` (the service's own signed audit log) is
      persisted verbatim into a new `AutogenousMutationRecord`, rather than
      ruClip inventing a parallel witness mechanism.
+   - **Delivered 2026-09-02 (coder stage)** —
+     `src/control-plane/governance/{autogenous-client,propose-budget-mutation}.ts`,
+     `store/agentdb-adapter.ts`'s `persistAutogenousMutationRecord`/
+     `recallAutogenousMutationRecord`. 23 new tests (251 total, up from
+     228), `tsc --strict` clean, verified on both Node 20.20.2 and Node
+     22.22.1.
+     - **Confirmed against real behavior**: every one of the seven real
+       `AdmitResponse.error` codes (§2.4) round-trips correctly, including
+       the PascalCase-Debug-string-vs-snake_case nuance. `assertValidCanaryState`/
+       `assertValidDecision` accept exactly §2.6's three/four hand-built
+       fixture shapes and — the defensive boundary team-lead specifically
+       asked for — throw `AutogenousClientError` on anything else, rather
+       than silently passing an unexpected shape through;
+       `createCanary`/`observeCanary` call these validators before
+       returning. `AutogenousClientError` on unreachability propagates
+       (never swallowed) through every call site, including
+       `checkAndProposeBudgetMutation`'s own admit/canary-create calls.
+     - **NOT yet confirmed against a live response — explicitly not marked
+       done, per instruction**: §2.6's `CanaryState`/`Decision`
+       externally-tagged encoding is still inferred from serde's
+       documented default behavior only; `autogenous-service` was not
+       deployed at the time of this delivery. The "first real integration
+       test" §7 names (`GET /health`, then one real `/v1/agl/admit` call)
+       has not run. `getHealth()` is implemented and ready for that step.
+       Will flag the architect directly once the live URL is available to
+       finish this verification, per their explicit instruction, rather
+       than guessing further.
+     - **Mechanics invented beyond the design doc's own wire contract**
+       (documented in `propose-budget-mutation.ts`'s own file header, not
+       silently decided): the "3+ consecutive WARNING-or-worse within a
+       bounded window" pattern needs its own small persisted rolling
+       window — §4 names the trigger, not this mechanism — implemented as
+       a feature-scoped `memory_store` namespace
+       (`ruclip-autogenous-budget-triggers`), matching
+       `employee-augmentation/interaction-profile.ts`'s precedent of
+       keeping a feature's own storage private to its own file rather than
+       adding a generic primitive to the adapter. `Genome.constitution` has
+       no real value yet (Phase 4b hasn't authored one) — set to a
+       documented placeholder (`'unconstituted'`), reasoned safe because
+       none of the seven real `AdmissionError` codes concern this field's
+       format; only `/v1/promote`/`/v1/judges/evaluate` (out of scope)
+       actually need a real `Constitution`. `FitnessVector` fields with no
+       way to be measured from a budget-config change alone
+       (`task_quality`, `p99_overhead_ms`, `false_positive_rate`) get
+       conservative, explicitly-documented defaults — never a value chosen
+       to make a gate pass; `rollback_verified` is always `false` in this
+       v1 flow since a rollback is never actually exercised here.
+     - **Not wired**: `fireHeartbeat`'s own Gate 2 does not yet call
+       `checkAndProposeBudgetMutation` — that integration point is a
+       separate decision outside this slice's own file list (§7 names only
+       the governance module + adapter functions), left for architect/
+       team-lead to schedule.
 6. **Phase 5 — Dream-machine nightly integration**: config + `/schedule`
    routine, first ledger rows. **Amended 2026-09-01**: rotation surface is
    codebase-only (§6) — no runtime `redblue` rotation here, that's Phase 4's
