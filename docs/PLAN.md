@@ -167,9 +167,15 @@ GCP cron — reuse verbatim.
 
 ## 7. GCP footprint (confirmed this session, read-only)
 
-- Org is `ruv.net` (id `885436984033`); **"cognitum-one" is not a separate
-  org** — it was a misreading of the `cognitum-20260110` project's display
-  name "Cognitum." Corrected here so future references use the right ID.
+- Org is `ruv.net` (id `885436984033`); **as a GCP org, "cognitum-one" is
+  not a separate one** — it was a misreading of the `cognitum-20260110`
+  project's display name "Cognitum." Corrected here so future GCP-project
+  references use the right ID. **Disambiguation added 2026-09-02**: this
+  is a claim about GCP org identity specifically, not about GitHub —
+  `cognitum-one` the **GitHub org** (90+ repos, e.g. `cognitum-one/slack`,
+  referenced in this doc's own Phase 2b notes below) is real and separate
+  from both `ruv.net` and `cognitum-20260110`. The two systems' naming
+  overlapping is coincidental, not evidence either claim is wrong.
 - `ruv-dev`: 2 running VMs (`ruvbrain-vm` e2-standard-4, `edge-net-turn`
   e2-small), 18 Cloud Run services, **no GPU quota**.
 - `cognitum-20260110`: 18 VMs (several terminated), mostly GitHub Actions

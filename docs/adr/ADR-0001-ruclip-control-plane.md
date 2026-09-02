@@ -1,6 +1,9 @@
 # ADR-0001: ruClip — ruvnet-only agent-run company control plane
 
-- **Status**: proposed
+- **Status**: Accepted (2026-09-02 — Phase 1 control-plane core and Phase 3
+  build-time genome have shipped against this decision; see `docs/PLAN.md`
+  §8 for delivery status and amendments 7a/7b/5a below for what's changed
+  since the original proposal)
 - **Date**: 2026-09-01
 - **Deciders**:
 - **Tags**: ruclip, metaharness, dream-machine, agentbbs, ruvector, latentmesh, agent-teams

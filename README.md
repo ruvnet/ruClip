@@ -5,7 +5,7 @@
 ### A ruvnet-only control plane for running a company where the employees are agents
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![status](https://img.shields.io/badge/status-early_scaffold-orange)](docs/adr/ADR-0001-ruclip-control-plane.md)
+[![status](https://img.shields.io/badge/status-active_development-green)](docs/adr/ADR-0001-ruclip-control-plane.md)
 
 </div>
 
@@ -28,7 +28,8 @@ here reimplements what already exists elsewhere in the ecosystem:
 | Capability | Backed by |
 |---|---|
 | Agent orchestration, work-ownership, signed audit trail | [`ruflo`](https://github.com/ruvnet/ruflo) — Agent Teams, `claims_*`, `witness` |
-| Build- and runtime-governance of ruClip itself | [`metaharness`](https://github.com/ruvnet/metaharness) — custom `ruclip-metaharness` bench suites, `@metaharness/redblue`, `@metaharness/flywheel` |
+| Build-time governance of ruClip's own codebase | [`metaharness`](https://github.com/ruvnet/metaharness) — `metaharness score`/`genome`, a custom `ruclip-metaharness` `.harness/bench.json` suite. `@metaharness/redblue`/`@metaharness/flywheel` are explicitly not part of this — that role belongs to Autogenous (below), permanently |
+| Runtime governance of the live company | [`ruvnet/autogenous`](https://github.com/ruvnet/autogenous) — antibody/canary/rollback model, `packages/radio-moe` as the cross-provider agent adapter |
 | Semantic memory + Company/Goals/Issues schema | [`ruvector`](https://github.com/ruvnet/ruvector) + AgentDB |
 | Human+agent comms (the Slack-equivalent) | [`agentbbs`](https://github.com/ruvnet/AgentBBS) |
 | Nightly evidence-gated evolution | [`dream-machine`](https://github.com/ruvnet/dream-machine) — config only, no new scheduler |
@@ -41,9 +42,20 @@ and [`docs/PLAN.md`](docs/PLAN.md) for the phased implementation roadmap.
 
 ## Status
 
-Early scaffold — architecture and ADR only, staged from
-[`ruvnet/ruflo`](https://github.com/ruvnet/ruflo) branch `explore/ruclip-mission`.
-No control-plane code yet. Follow the roadmap in `docs/PLAN.md`.
+Active development. Shipped: Phase 1 (control-plane core — Company/Goals/
+Issues schema, approval-gate state machine, `claims_*`-backed
+authorization, `ActorCredential` identity verification, budget-gated
+heartbeats, agentbbs comms with `radio-moe` signing, per-`OrgMember`
+interaction profiles), Phase 3 (build-time governance genome), Phase 2a
+(read-only company-board dashboard, as a Claude Artifact), and Phase 2b's
+first slice — a real `HumanIdentityAttestation` → `ActorCredential`
+minting primitive, so a human OrgMember holding a valid attestation can
+already call `applyApprovalTransition` end to end. Still open: no
+attestation *producer* exists yet (no login/dashboard flow), which is now
+Phase 2b's narrowed remaining scope, and dashboard write actions
+(approve/reject UI) aren't built. See `docs/PLAN.md` §8 for the full phased
+roadmap and current delivery status, and `docs/design/` for every slice's
+design doc.
 
 ## License
 
