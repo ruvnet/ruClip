@@ -1689,6 +1689,40 @@ governance (Phase 4) and dream-machine nightly integration (Phase 5).
    — `radio-moe`'s only role in the shipped code is the signing layer
    inside `AgentBbsNotificationChannel`. This Phase 1f item is unaffected;
    it was already describing a distinct, not-yet-built integration point.)
+   - **Investigated 2026-09-02, held — confirmed no live consumer exists**:
+     team-lead asked whether a genuine, concrete integration point already
+     exists before designing anything. Checked directly, not assumed:
+     `fireHeartbeat` (`heartbeat/fire-heartbeat.ts`), the exact call site
+     this bullet names, was read in full. Its own comment states plainly
+     "this publish IS the wake" (line 106) — passing both budget gates
+     ends in a single `NotificationChannel.publish({kind:
+     'heartbeat-fired', ...})` call and a state update. It never inspects
+     `schedule.assigneeId`'s `OrgMember.kind` (agent vs. human), never
+     calls out to any model/LLM backend, and has no code path that could
+     invoke `radio-moe`'s `Gate`/`Peer.route()`/`Mesh` even if wired up —
+     "waking" an agent today means only "publish an event," not "dispatch
+     real work." Confirmed this is the ONLY place `assigneeId` is touched
+     outside pure schema/validation and the read-only dashboard snapshot
+     (`grep -l assigneeId src/**/*.ts`, excluding tests, returns exactly
+     `dashboard/build-snapshot.ts`, `schema/{validation,issue,
+     heartbeat-schedule}.ts`, `store/agentdb-adapter.ts`,
+     `heartbeat/fire-heartbeat.ts` — no dispatch code anywhere). Also
+     re-confirmed (grep across all of `src/`) that every real `radio-moe`
+     usage in this codebase remains signing-only (`PeerIdentity`/
+     `signFrame`/`verifyFrame`/`canonicalBytes` in
+     `agentbbs-notification-channel.ts`, `human-identity-attestation.ts`,
+     `actor-credential.ts`, `credential-issuer.ts`) — zero use of `Gate`,
+     `Peer`, `Mesh`, or any backend adapter anywhere. **Conclusion,
+     reported plainly rather than building infrastructure with no
+     caller**: there is no live use case for `radio-moe` cross-provider
+     dispatch in ruClip today — "wake" is a notification event an agent
+     process happens to be listening for elsewhere, not something ruClip
+     itself orchestrates. Phase 1f held, not designed, per team-lead's own
+     explicit instruction for exactly this outcome. Revisit once/if
+     something in this repo actually needs to make a real model call on
+     an assignee's behalf — most likely candidate, if one emerges, is
+     still `fireHeartbeat`'s wake step, but that would be new scope on top
+     of the current publish-only implementation, not a drop-in swap.
 9a. **Bridge-client hardening (delivered this iteration, PR to `ruvnet/ruClip`
    requested via ruClip#1)** — two corrections to `store/bridge-client.ts`
    against the real, published bridge (`ruflo@3.38.20`, `ruflo mcp start -t
