@@ -392,6 +392,51 @@ test('checkOperatingBudget reports HARD_STOP once utilization reaches 100%', asy
   assert.equal(result.level, 'HARD_STOP');
 });
 
+test(
+  'checkOperatingBudget fetches per-session memory_retrieve calls concurrently (bounded), not one round trip at a ' +
+    'time — Dream Cycle 2026-09-03 performance finding: Gate 2 runs on every heartbeat fire, so N sequential ' +
+    'round trips is O(N) latency on the hot path',
+  async () => {
+    const SESSION_COUNT = 6;
+    const ROUND_TRIP_MS = 25;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const { config } = mockBridge({
+      'memory_retrieve': async (args) => {
+        if (args.key === 'co-1:budget-config') {
+          return {
+            found: true,
+            value: { budgetUsd: 1000, thresholds: { info: 0.5, warning: 0.75, critical: 0.9, hardStop: 1.0 } },
+          };
+        }
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, ROUND_TRIP_MS));
+        inFlight -= 1;
+        return { found: true, value: { total_cost_usd: 1 } };
+      },
+      'memory_list': () => ({
+        entries: Array.from({ length: SESSION_COUNT }, (_, i) => ({ key: `co-1:session-${i}` })),
+      }),
+    });
+
+    const start = Date.now();
+    const result = await checkOperatingBudget('co-1', config);
+    const elapsedMs = Date.now() - start;
+
+    assert.equal(result.utilizationPct, SESSION_COUNT / 1000, 'sum must be unaffected by fetch ordering');
+    assert.ok(
+      maxInFlight > 1,
+      `expected overlapping in-flight session fetches (proof of concurrency), observed max ${maxInFlight}`,
+    );
+    assert.ok(
+      elapsedMs < SESSION_COUNT * ROUND_TRIP_MS,
+      `expected concurrent fetch to beat ${SESSION_COUNT} sequential round trips ` +
+        `(${SESSION_COUNT * ROUND_TRIP_MS}ms), took ${elapsedMs}ms`,
+    );
+  },
+);
+
 test('setOperatingBudget calls memory_store with upsert:true against the ruclip-cost-tracking namespace', async () => {
   const { calls, config } = mockBridge({
     'memory_store': () => ({ success: true }),

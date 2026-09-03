@@ -293,6 +293,15 @@ checkOperatingBudget(companyId: string, config?): Promise<{ level: 'OK'|'INFO'|'
   `budget.mjs check`'s own "no budget configured" non-alerting path.
 - Applies the exact same threshold table `alertLevel()` in `budget.mjs`
   uses (50/75/90/100%).
+- **Dream Cycle 2026-09-03 (performance/latency)**: the per-key
+  `memory_retrieve` reads above are independent — nothing needs one
+  session's fetch to finish before the next starts — so they run through a
+  bounded worker pool (`mapWithConcurrency`, cap 25 in flight) instead of
+  one `await` per loop iteration. Gate 2 runs on every heartbeat fire, so
+  this was O(N) sequential round trips on a hot path; measured 155ms →
+  32ms for N=6 mocked 25ms round trips (`agentdb-adapter.ts`'s
+  `checkOperatingBudget`). Output (`totalCostUsd`/`utilizationPct`/`level`)
+  is unchanged — summation doesn't depend on fetch order.
 
 ## 5. Comms seam
 

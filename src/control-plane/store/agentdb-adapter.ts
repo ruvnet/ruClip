@@ -1305,6 +1305,39 @@ export function operatingBudgetLevel(utilizationPct: number, thresholds: Operati
 }
 
 /**
+ * Upper bound on simultaneous in-flight `memory_retrieve` calls when
+ * `checkOperatingBudget` fans out over session keys (see below). Bounded
+ * rather than a bare `Promise.all` because `memory_list` itself is capped
+ * at `limit: 1000` — an unbounded fan-out would open up to 1000 concurrent
+ * RPCs against the bridge on a single Gate-2 heartbeat check.
+ */
+const SESSION_COST_FETCH_CONCURRENCY = 25;
+
+/**
+ * Runs `fn` over `items` with at most `limit` calls in flight at once,
+ * preserving `items`' order in the returned array (a fixed-size worker
+ * pool pulling from a shared cursor, not chunk-and-await-each-chunk, so a
+ * single slow key never stalls the other `limit - 1` workers).
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  async function worker(): Promise<void> {
+    for (;;) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index]!);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+/**
  * Gate 2 (HEARTBEATS-AND-COMMS.md §2/§4) — ruClip's own whole-company
  * operating-spend circuit breaker, mirroring `ruflo-cost-tracker`'s
  * alert-ladder shape but reading/writing ruClip's own namespace.
@@ -1321,6 +1354,15 @@ export function operatingBudgetLevel(utilizationPct: number, thresholds: Operati
  * `v3/@claude-flow/cli/src/mcp-tools/agentdb-tools.ts`'s own pattern-search
  * fallback works around (its `#2226` comment) — same tool family, same
  * constraint, independently re-discovered here.
+ *
+ * Dream Cycle 2026-09-03 (performance/latency): the per-key
+ * `memory_retrieve` round trips are independent reads of unrelated keys —
+ * nothing here needs one session's fetch to complete before the next
+ * starts — so they now fan out via `mapWithConcurrency` instead of one
+ * `await` per loop iteration. Gate 2 runs on every heartbeat fire
+ * (`fire-heartbeat.ts`), so wall-clock latency here scales with company
+ * session-key count on the hot path; bounded concurrency turns that from
+ * O(N) sequential round trips into O(N / SESSION_COST_FETCH_CONCURRENCY).
  */
 export async function checkOperatingBudget(
   companyId: string,
@@ -1347,13 +1389,12 @@ export async function checkOperatingBudget(
     .map((e) => e.key)
     .filter((key) => key.startsWith(operatingSessionKeyPrefix(companyId)));
 
+  const sessionResults = await mapWithConcurrency(sessionKeys, SESSION_COST_FETCH_CONCURRENCY, (key) =>
+    callTool<{ found?: boolean; value?: unknown }>('memory_retrieve', { key, namespace: RUCLIP_COST_NAMESPACE }, config),
+  );
+
   let totalCostUsd = 0;
-  for (const key of sessionKeys) {
-    const sessionResult = await callTool<{ found?: boolean; value?: unknown }>(
-      'memory_retrieve',
-      { key, namespace: RUCLIP_COST_NAMESPACE },
-      config,
-    );
+  for (const sessionResult of sessionResults) {
     const value = sessionResult.value as { total_cost_usd?: unknown } | undefined;
     if (sessionResult.found && value && typeof value.total_cost_usd === 'number') {
       totalCostUsd += value.total_cost_usd;
