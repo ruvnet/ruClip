@@ -187,7 +187,7 @@ test('persistIssue with a parentId checks for a parent_of cycle before writing t
   const { calls, config } = mockBridge({
     'agentdb_hierarchical-recall': () => ({ results: [] }),
     'agentdb_hierarchical-store': () => ({ success: true }),
-    'agentdb_graph-query': () => ({ nodes: [] }),
+    'agentdb_graph-query': () => ({ results: [] }),
     'agentdb_causal-edge': () => ({ success: true }),
   });
   await persistIssue('co-1', baseIssue({ parentId: 'issue-parent' }), undefined, undefined, undefined, config);
@@ -215,7 +215,7 @@ test('persistIssue refuses a parent_of edge that would close a genuine (non-self
     // The proposed parent ("issue-parent") is reachable from the issue being
     // persisted ("issue-1") — i.e. issue-parent is already a descendant of
     // issue-1 — so parent_of: issue-parent -> issue-1 would close a cycle.
-    'agentdb_graph-query': () => ({ nodes: [{ id: 'entity:issue:issue-parent' }] }),
+    'agentdb_graph-query': () => ({ results: [{ nodeId: 'entity:issue:issue-parent' }] }),
     'agentdb_causal-edge': () => ({ success: true }),
   });
   const issue = baseIssue({ parentId: 'issue-parent', assigneeId: 'om-9' });
@@ -282,7 +282,11 @@ test('addBlocksEdge writes a blocks edge with no cycle check (blocks is not a tr
 test('getBlockerIssueIds strips the entity:issue: prefix and ignores non-issue neighbors', async () => {
   const { config } = mockBridge({
     'agentdb_graph-query': () => ({
-      nodes: [{ id: 'entity:issue:blocker-1' }, { id: 'entity:org-member:om-1' }, { id: 'entity:issue:blocker-2' }],
+      results: [
+        { nodeId: 'entity:issue:blocker-1' },
+        { nodeId: 'entity:org-member:om-1' },
+        { nodeId: 'entity:issue:blocker-2' },
+      ],
     }),
   });
   const blockers = await getBlockerIssueIds('issue-1', config);
@@ -292,7 +296,7 @@ test('getBlockerIssueIds strips the entity:issue: prefix and ignores non-issue n
 test('getChildIssueIds strips the entity:issue: prefix and ignores non-issue neighbors', async () => {
   const { config } = mockBridge({
     'agentdb_graph-query': () => ({
-      nodes: [{ id: 'entity:issue:child-1' }, { id: 'entity:goal:goal-1' }],
+      results: [{ nodeId: 'entity:issue:child-1' }, { nodeId: 'entity:goal:goal-1' }],
     }),
   });
   const children = await getChildIssueIds('issue-1', config);

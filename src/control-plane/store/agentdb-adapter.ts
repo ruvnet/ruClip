@@ -275,6 +275,26 @@ const CYCLE_CHECKED_RELATIONS: readonly CausalRelation[] = ['parent_of', 'report
  * `candidateSourceId` is reachable from `candidateTargetId` by following
  * `relation` edges — i.e. adding `candidateSourceId -> candidateTargetId`
  * would close a cycle.
+ *
+ * Ground-truth correction (found tonight by reading the real, currently-
+ * pinned tool implementation directly —
+ * `node_modules/@claude-flow/cli/dist/src/mcp-tools/agentdb-tools.js`,
+ * `agentdbGraphQuery.handler`'s k-hop branch — rather than trusting this
+ * file's own prior shape assumption): the real tool's k-hop response is
+ * `{ results: [{ nodeId, depth? }, ...], count, backend, ... }`, never
+ * `{ nodes: [{ id }, ...] }`. `@claude-flow/cli@3.38.20` is the exact
+ * version this repo already cites elsewhere (`ruflo@3.38.20`) and has
+ * installed in its own `node_modules` — not a version-drift guess. Reading
+ * `result.nodes` against that real tool always resolves to `undefined` ->
+ * `[]`, so `wouldCreateCycle` has silently never rejected any edge and
+ * `graphNeighbors` below (feeding `getChildIssueIds`/`getBlockerIssueIds`)
+ * has always returned an empty array — this whole k-hop path has been dead
+ * against the real bridge since it was written. Every existing test still
+ * passed because `tests/support/mock-bridge.ts`'s handlers were written to
+ * return that same wrong `{nodes: [{id}]}` shape — a self-consistent mock
+ * that was never checked against the real tool's actual contract. Fixed
+ * here by reading the real `results`/`nodeId` shape; every test mocking
+ * `agentdb_graph-query` is corrected to match in the same change.
  */
 async function wouldCreateCycle(
   candidateSourceId: string,
@@ -282,12 +302,12 @@ async function wouldCreateCycle(
   relation: CausalRelation,
   config?: AgentDbAdapterConfig,
 ): Promise<boolean> {
-  const result = await callTool<{ nodes?: Array<{ id: string }> }>(
+  const result = await callTool<{ results?: Array<{ nodeId: string }> }>(
     'agentdb_graph-query',
     { nodeId: candidateTargetId, mode: 'k-hop', relation, depth: 5 },
     config,
   );
-  return (result.nodes ?? []).some((n) => n.id === candidateSourceId);
+  return (result.results ?? []).some((n) => n.nodeId === candidateSourceId);
 }
 
 /**
@@ -313,18 +333,23 @@ export async function recordCausalEdge(
   await callTool('agentdb_causal-edge', { sourceId, targetId, relation, weight: 1.0 }, config);
 }
 
-/** k-hop neighbors of `nodeId` following `relation`, one hop, as raw entity ids. */
+/**
+ * k-hop neighbors of `nodeId` following `relation`, one hop, as raw entity
+ * ids. Real response shape (`results`/`nodeId`, not `nodes`/`id`) — see
+ * wouldCreateCycle's own header comment above for the ground-truth fix this
+ * shares.
+ */
 async function graphNeighbors(
   nodeId: string,
   relation: CausalRelation,
   config?: AgentDbAdapterConfig,
 ): Promise<string[]> {
-  const result = await callTool<{ nodes?: Array<{ id: string }> }>(
+  const result = await callTool<{ results?: Array<{ nodeId: string }> }>(
     'agentdb_graph-query',
     { nodeId, mode: 'k-hop', relation, depth: 1 },
     config,
   );
-  return (result.nodes ?? []).map((n) => n.id);
+  return (result.results ?? []).map((n) => n.nodeId);
 }
 
 // --- Company ---------------------------------------------------------------

@@ -151,7 +151,7 @@ test('persistOrgMember without a manager skips the reports_to edge', async () =>
 test('persistOrgMember with a manager checks for cycles then writes reports_to', async () => {
   const { calls, config } = mockBridge({
     'agentdb_hierarchical-store': () => ({ success: true }),
-    'agentdb_graph-query': () => ({ nodes: [] }),
+    'agentdb_graph-query': () => ({ results: [] }),
     'agentdb_causal-edge': () => ({ success: true }),
   });
   const member: OrgMember = {
@@ -176,7 +176,7 @@ test('recordCausalEdge refuses a reports_to edge that would close a cycle', asyn
   const { config } = mockBridge({
     // The proposed target (om-1) can already reach the proposed source (om-2)
     // one hop away, so adding om-2 -> om-1 would close a cycle.
-    'agentdb_graph-query': () => ({ nodes: [{ id: 'entity:org-member:om-2' }] }),
+    'agentdb_graph-query': () => ({ results: [{ nodeId: 'entity:org-member:om-2' }] }),
   });
   await assert.rejects(
     () => recordCausalEdge('entity:org-member:om-2', 'entity:org-member:om-1', 'reports_to', config),

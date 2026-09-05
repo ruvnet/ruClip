@@ -228,9 +228,9 @@ test('buildDashboardSnapshot assembles Company/Goals/Issues/Heartbeats into one 
     },
     'agentdb_graph-query': (args) => {
       if (args.nodeId === 'entity:issue:issue-parent' && args.relation === 'parent_of') {
-        return { nodes: [{ id: 'entity:issue:issue-child' }] };
+        return { results: [{ nodeId: 'entity:issue:issue-child' }] };
       }
-      return { nodes: [] };
+      return { results: [] };
     },
   });
 
@@ -324,7 +324,7 @@ test('buildDashboardSnapshot calls recallOrgMember exactly once per DISTINCT org
       }
       return { results: [] };
     },
-    'agentdb_graph-query': () => ({ nodes: [] }),
+    'agentdb_graph-query': () => ({ results: [] }),
   });
 
   const snapshot = await buildDashboardSnapshot('co-1', config);
@@ -369,7 +369,7 @@ test('the org-member cache does not leak across separate buildDashboardSnapshot 
       }
       return { results: [] };
     },
-    'agentdb_graph-query': () => ({ nodes: [] }),
+    'agentdb_graph-query': () => ({ results: [] }),
   });
 
   await buildDashboardSnapshot('co-1', config);

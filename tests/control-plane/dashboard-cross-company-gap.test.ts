@@ -133,9 +133,9 @@ test(
         // to share the id 'issue-shared-id' — reachable because
         // entityNodeId('issue', id) has no companyId component at all.
         if (args.nodeId === 'entity:issue:issue-shared-id' && args.relation === 'parent_of') {
-          return { nodes: [{ id: 'entity:issue:issue-belongs-to-company-b' }] };
+          return { results: [{ nodeId: 'entity:issue:issue-belongs-to-company-b' }] };
         }
-        return { nodes: [] };
+        return { results: [] };
       },
     });
 
