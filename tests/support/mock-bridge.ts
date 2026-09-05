@@ -64,7 +64,7 @@ function jsonResponse(body: unknown, headers: Record<string, string> = {}): Resp
 }
 
 export function mockBridge(
-  handlers: Record<string, (args: Record<string, unknown>) => unknown>,
+  handlers: Record<string, (args: Record<string, unknown>) => unknown | Promise<unknown>>,
   options: MockBridgeOptions = {},
 ) {
   const calls: RecordedCall[] = [];
@@ -120,7 +120,7 @@ export function mockBridge(
     if (!handler) {
       throw new Error(`No mock handler registered for tool '${name}'`);
     }
-    const result = handler(args ?? {});
+    const result = await handler(args ?? {});
     return jsonResponse({
       jsonrpc: '2.0',
       id: '1',
