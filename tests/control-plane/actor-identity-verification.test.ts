@@ -20,7 +20,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mockBridge } from '../support/mock-bridge.js';
-import { credentialFor, nonceMockHandlers, testIssuerConfig, unadmittedIssuerConfig } from '../support/actor-credential-fixture.js';
+import {
+  credentialFor,
+  nonceMockHandlers,
+  racingNonceMockHandlers,
+  testIssuerConfig,
+  unadmittedIssuerConfig,
+} from '../support/actor-credential-fixture.js';
 import {
   verifyActorCredential,
   resolveVerifiedActor,
@@ -98,8 +104,9 @@ test('verifyActorCredential succeeds for a validly-signed, unexpired, unreplayed
 
   const result = await verifyActorCredential(credential, admittedIssuerKeys, config);
   assert.deepEqual(result, { orgMemberId: 'om-1', companyId: 'co-1' });
-  assert.ok(calls.some((c) => c.toolName === 'memory_retrieve'));
-  assert.ok(calls.some((c) => c.toolName === 'memory_store'));
+  const storeCall = calls.find((c) => c.toolName === 'memory_store');
+  assert.ok(storeCall, 'expected a memory_store call recording the credential nonce as used');
+  assert.equal(storeCall.args.upsert, false, 'the nonce guard must strict-insert, never upsert over an existing nonce');
 });
 
 test('verifyActorCredential rejects a forged orgMemberId — tampering the credential after signing breaks the signature', async () => {
@@ -130,6 +137,27 @@ test('verifyActorCredential rejects a replayed nonce — the same credential can
     ActorIdentityVerificationError,
   );
 });
+
+test(
+  'verifyActorCredential rejects a replayed nonce even when two verifications race concurrently for the same ' +
+    'credential — the single-use guard must be atomic, not a check-then-act retrieve-then-store (a TOCTOU window ' +
+    'would let a short-lived credential authorize two operations instead of one)',
+  async () => {
+    const actor = baseActor();
+    const { config } = mockBridge({ ...racingNonceMockHandlers(2) });
+    const { credential, admittedIssuerKeys } = await credentialFor(actor);
+
+    const results = await Promise.allSettled([
+      verifyActorCredential(credential, admittedIssuerKeys, config),
+      verifyActorCredential(credential, admittedIssuerKeys, config),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    assert.equal(fulfilled.length, 1, 'exactly one concurrent verification of the same credential may succeed');
+    assert.equal(rejected.length, 1, 'the other concurrent verification must be rejected as a nonce replay');
+  },
+);
 
 test('verifyActorCredential rejects a validly-signed credential from an unadmitted issuer key', async () => {
   const actor = baseActor();

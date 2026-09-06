@@ -252,7 +252,7 @@ test(
     );
     assert.deepEqual(
       calls.map((c) => c.toolName),
-      ['memory_retrieve', 'memory_store', 'agentdb_hierarchical-recall', 'claims_handoff'],
+      ['memory_store', 'agentdb_hierarchical-recall', 'claims_handoff'],
       'credential verification (nonce check/consume + recallOrgMember) and the pre-transition claims_handoff both ' +
         'run, but no store/delete/causal-edge write should happen once the witness hook rejects',
     );

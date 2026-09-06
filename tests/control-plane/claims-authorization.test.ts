@@ -441,7 +441,7 @@ test('applyApprovalTransition: a failed claims_accept-handoff short-circuits bef
   // necessarily runs before claims_accept-handoff.
   assert.deepEqual(
     calls.map((c) => c.toolName),
-    ['memory_retrieve', 'memory_store', 'agentdb_hierarchical-recall', 'claims_accept-handoff'],
+    ['memory_store', 'agentdb_hierarchical-recall', 'claims_accept-handoff'],
   );
 });
 
