@@ -222,26 +222,30 @@ export async function verifyActorCredential(
     );
   }
 
-  // Replay guard (§3) — reuses memory_store's real ttl parameter rather
-  // than a new expiry mechanism; the consumed-nonce record self-expires
-  // exactly when the credential it guarded would have expired anyway.
+  // Replay guard (§3) — a single atomic strict-insert (`upsert: false`),
+  // never a separate memory_retrieve-then-memory_store pair. The retrieve-
+  // then-store shape is a check-then-act race: two concurrent verifications
+  // of the SAME credential can both observe "not yet used" before either one
+  // writes the marker, so both would proceed — defeating the single-use
+  // guarantee this guard exists for. `memory_store` with `upsert: false`
+  // strict-inserts against the real backend's `UNIQUE(namespace, key)`
+  // constraint (memory-initializer.js's `memory_entries` schema), so a
+  // second concurrent writer for the same key fails instead of racing past
+  // this check — reuses memory_store's real ttl parameter rather than a new
+  // expiry mechanism; the consumed-nonce record self-expires exactly when
+  // the credential it guarded would have expired anyway.
   const nonceKey = credentialNonceKey(credential.companyId, credential.nonce);
-  const existing = await callTool<{ found?: boolean }>(
-    'memory_retrieve',
-    { key: nonceKey, namespace: NONCE_NAMESPACE },
+  const ttlSeconds = Math.max(1, Math.ceil((Date.parse(credential.expiresAt) - Date.now()) / 1000));
+  const stored = await callTool<{ success?: boolean }>(
+    'memory_store',
+    { key: nonceKey, value: true, ttl: ttlSeconds, namespace: NONCE_NAMESPACE, upsert: false },
     config,
   );
-  if (existing.found) {
+  if (!stored.success) {
     throw new ActorIdentityVerificationError(
       `ActorCredential for '${credential.orgMemberId}' was already used (nonce replay)`,
     );
   }
-  const ttlSeconds = Math.max(1, Math.ceil((Date.parse(credential.expiresAt) - Date.now()) / 1000));
-  await callTool(
-    'memory_store',
-    { key: nonceKey, value: true, ttl: ttlSeconds, namespace: NONCE_NAMESPACE },
-    config,
-  );
 
   return { orgMemberId: credential.orgMemberId, companyId: credential.companyId };
 }

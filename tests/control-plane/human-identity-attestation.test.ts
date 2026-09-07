@@ -27,6 +27,7 @@ import {
   humanAttestationFor,
   humanCredentialFor,
   nonceMockHandlers,
+  racingNonceMockHandlers,
   testAdmittedAttesterKeys,
   testIssuerConfig,
   unadmittedAttesterPrivateKeyPem,
@@ -171,6 +172,27 @@ test('verifyHumanIdentityAttestation rejects a replayed attestation nonce — th
     ActorIdentityVerificationError,
   );
 });
+
+test(
+  'verifyHumanIdentityAttestation rejects a replayed nonce even when two verifications race concurrently for the ' +
+    'same attestation — same atomicity requirement as ActorCredential\'s own nonce guard (actor-credential.ts), ' +
+    'checked here because this is a separate guard over a separate namespace, not shared code',
+  async () => {
+    const human = humanMember();
+    const { config } = mockBridge({ ...racingNonceMockHandlers(2) });
+    const attestation = await humanAttestationFor(human);
+
+    const results = await Promise.allSettled([
+      verifyHumanIdentityAttestation(attestation, testAdmittedAttesterKeys, config),
+      verifyHumanIdentityAttestation(attestation, testAdmittedAttesterKeys, config),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    assert.equal(fulfilled.length, 1, 'exactly one concurrent verification of the same attestation may succeed');
+    assert.equal(rejected.length, 1, 'the other concurrent verification must be rejected as a nonce replay');
+  },
+);
 
 test('mintHumanActorCredential rejects when the target OrgMember does not exist', async () => {
   const { config } = mockBridge({ 'agentdb_hierarchical-recall': () => ({ results: [] }), ...nonceMockHandlers() });

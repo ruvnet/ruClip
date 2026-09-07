@@ -579,7 +579,6 @@ test(
     // transitionApprovalState. What must still hold is that nothing past that
     // point runs: no ApprovalTransition/Issue write, no causal edge.
     assert.deepEqual(calls.map((c) => c.toolName), [
-      'memory_retrieve',
       'memory_store',
       'agentdb_hierarchical-recall',
       'claims_accept-handoff',

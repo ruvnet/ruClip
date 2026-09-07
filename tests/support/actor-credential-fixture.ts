@@ -126,13 +126,62 @@ export async function humanCredentialFor(
  * In-memory `memory_retrieve`/`memory_store` handlers for the
  * `ruclip-actor-credentials` nonce namespace — merge into `mockBridge`'s
  * handler map. A fresh `Map` per call keeps tests isolated from each other.
+ *
+ * `memory_store` mirrors the real backend's `UNIQUE(namespace, key)`
+ * constraint (`memory-initializer.js`'s `memory_entries` schema): a call
+ * that passes `upsert: false` against an already-occupied key fails instead
+ * of overwriting it, exactly like the real `INSERT` (no `OR REPLACE`) SQL
+ * the real tool runs in that mode. Callers that omit `upsert` (or pass
+ * `true`) keep the old always-succeeds behavior.
  */
 export function nonceMockHandlers(): Record<string, (args: Record<string, unknown>) => unknown> {
   const store = new Map<string, boolean>();
   return {
     memory_retrieve: (args) => ({ found: store.has(args.key as string) }),
     memory_store: (args) => {
-      store.set(args.key as string, true);
+      const key = args.key as string;
+      if (args.upsert === false && store.has(key)) {
+        return { success: false, error: 'UNIQUE constraint failed: memory_entries.namespace, memory_entries.key' };
+      }
+      store.set(key, true);
+      return { success: true };
+    },
+  };
+}
+
+/**
+ * Same contract as `nonceMockHandlers`, plus a deterministic barrier on
+ * `memory_retrieve`: every caller blocks there until exactly `concurrency`
+ * callers have arrived, then all proceed together. Reproduces the
+ * worst-case interleaving of a check-then-act race — every concurrent
+ * caller observes the nonce as unused before any of them writes it — as a
+ * repeatable, non-flaky test rather than hoping the event loop happens to
+ * interleave that way. `memory_store` is deliberately NOT gated: a
+ * synchronous check-and-set has no `await` in between for another caller to
+ * interleave through, which is exactly the atomicity the real
+ * `UNIQUE(namespace, key)` constraint (serialized by the real backend's own
+ * per-file write lock) provides in production.
+ */
+export function racingNonceMockHandlers(concurrency: number): Record<string, (args: Record<string, unknown>) => unknown> {
+  const store = new Map<string, boolean>();
+  let arrived = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    memory_retrieve: async (args) => {
+      arrived += 1;
+      if (arrived >= concurrency) release();
+      await gate;
+      return { found: store.has(args.key as string) };
+    },
+    memory_store: (args) => {
+      const key = args.key as string;
+      if (args.upsert === false && store.has(key)) {
+        return { success: false, error: 'UNIQUE constraint failed: memory_entries.namespace, memory_entries.key' };
+      }
+      store.set(key, true);
       return { success: true };
     },
   };
