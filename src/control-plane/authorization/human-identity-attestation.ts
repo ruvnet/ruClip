@@ -265,23 +265,21 @@ export async function verifyHumanIdentityAttestation(
     );
   }
 
+  // Atomic strict-insert, not a retrieve-then-store race — see
+  // actor-credential.ts's `verifyActorCredential` for the full rationale
+  // (same fix, same underlying `UNIQUE(namespace, key)` backend guarantee).
   const nonceKey = attestationNonceKey(attestation.companyId, attestation.nonce);
-  const existing = await callTool<{ found?: boolean }>(
-    'memory_retrieve',
-    { key: nonceKey, namespace: ATTESTATION_NONCE_NAMESPACE },
+  const ttlSeconds = Math.max(1, Math.ceil((Date.parse(attestation.expiresAt) - Date.now()) / 1000));
+  const stored = await callTool<{ success?: boolean }>(
+    'memory_store',
+    { key: nonceKey, value: true, ttl: ttlSeconds, namespace: ATTESTATION_NONCE_NAMESPACE, upsert: false },
     config,
   );
-  if (existing.found) {
+  if (!stored.success) {
     throw new ActorIdentityVerificationError(
       `HumanIdentityAttestation for '${attestation.orgMemberId}' was already used (nonce replay)`,
     );
   }
-  const ttlSeconds = Math.max(1, Math.ceil((Date.parse(attestation.expiresAt) - Date.now()) / 1000));
-  await callTool(
-    'memory_store',
-    { key: nonceKey, value: true, ttl: ttlSeconds, namespace: ATTESTATION_NONCE_NAMESPACE },
-    config,
-  );
 
   return { orgMemberId: attestation.orgMemberId, companyId: attestation.companyId, humanIdentityRef: attestation.humanIdentityRef };
 }
