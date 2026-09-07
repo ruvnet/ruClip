@@ -134,6 +134,28 @@ fail 0
 ```
 0 regressions. The 3 baseline failures flip to pass; nothing else changes.
 
+Install used for every run above: `npm ci` (exact, lockfile-matching install — no `npm install ... || true` fallback of any kind).
+
+## Real-backend evidence (added in response to PR #15 review)
+
+Human review on the draft PR correctly pointed out that everything above exercises `verifyActorCredential`/`verifyHumanIdentityAttestation` through `mockBridge` — a hand-written double whose `memory_store` conflict-detection was built to MODEL the real backend's `UNIQUE(namespace, key)` constraint (per this report's own Candidate section), which is evidence about the mock's fidelity, not direct proof of the real backend's behavior. Addressed by adding
+`tests/control-plane/actor-credential-nonce-durable-backend.test.ts` (+
+`tests/support/nonce-store-race-worker.ts`), which call `@claude-flow/cli`'s
+own real `storeEntry`/`getEntry`/`initializeMemoryDatabase` directly — no
+mock — against a real on-disk SQLite file:
+
+- **Backend version bound in the receipt**: `@claude-flow/cli@3.38.20` — asserted at test time (a plain filesystem read of its `package.json`, not a module-resolution import, since its own `exports` map doesn't list `./package.json`); a future dependency bump that changes this version fails this specific assertion loudly rather than silently invalidating the conclusions below.
+- **Strict-insert, single process**: first `memory_store(upsert:false)` for a fresh key succeeds; a second call for the same key fails. Real `UNIQUE(namespace,key)` constraint, not assumed.
+- **Concurrent same-process race**: two `Promise.all`-raced real `storeEntry` calls for the same key — exactly one succeeds, and the winner is durably readable back.
+- **Real two-OS-process race** (the specific evidence requested — "across repeated processes", "durable after restart"): two separate `node` child processes, spawned independently, released at the same instant via a filesystem barrier, both racing `storeEntry(upsert:false)` against the *same* on-disk database file. Result: exactly one process's write succeeds; the winning entry is durably readable by a **third** process (the test runner itself) after **both writer processes have already exited** — durability across process boundaries, not merely within one process's lifetime.
+- **Backend coverage**: all of the above forced onto the sql.js (WASM SQLite) fallback path via the real tool's own `CLAUDE_FLOW_DISABLE_BRIDGE=1` escape hatch. The native `better-sqlite3` bridge path was **not** wired into the automated suite — manually invoking it during this fix's development showed it eagerly initializes a transformer embedding model on first use (real, observed behavior: a `Transformers.js loaded: Xenova/all-MiniLM-L6-v2` log line and a multi-second, network-touching delay even with `generateEmbeddingFlag:false` passed to the store call itself), which would make an automated CI suite slow, network-dependent, and non-deterministic. The bridge path was still verified manually (same successCount-1-of-2, same durable-read-true result) and both paths write through the byte-identical SQL (`INSERT ... ON CONFLICT(namespace,key) DO UPDATE ... WHERE status='deleted'` vs. plain `INSERT` against the same `UNIQUE(namespace,key)`), so sql.js is not a materially different code path for the property under test — this is a disclosed scope boundary, not a silent gap.
+- **Dependency/security gate**: `npm run harness:mcp-scan` → `{"mcpEnabled": false, "worst": "info", ...}` — ruClip registers no MCP server of its own (it is an MCP *client* of the `ruflo` bridge), so there is no MCP surface for this gate to find a finding in; a clean, expected result, not a null one.
+- **Reachability re-confirmation**: the 39 `npm audit` findings below (in `ruflo`'s transitive tree, including `@claude-flow/cli`'s own further dependencies) remain assessed as **not reachable** from ruClip's own `src`/`services` code — this real-backend test suite itself only reaches `@claude-flow/cli`'s memory-store code paths (not the vulnerable packages, which live under `agentdb`/`agentic-flow`/embedding/ONNX subtrees this suite deliberately avoids via `CLAUDE_FLOW_DISABLE_BRIDGE=1` + `generateEmbeddingFlag:false`). No new reachability evidence changes that conclusion; nothing beyond the public `npm audit` package/severity data (already non-sensitive, standard vulnerability-disclosure-level detail) is included anywhere in this report, the issue, or the PR.
+
+Candidate SHA this evidence was gathered against: see PR #15's HEAD commit at the time of this update (the commit introducing this section and the two new test files).
+
+Full suite after this addition: `tests 327 / pass 327 / fail 0`.
+
 ## Darwin
 
 Skipped, deliberately. Bounded Darwin mutates a *parameter or heuristic*
@@ -257,10 +279,17 @@ change needed; recorded as a clean scan, not a null result.
 ## Witness
 
 ```
-REPORT_HASH    = dd0b14eb8402e120cf590e745864f64577125c589b15a4c2e580a9e67dc24f5b
+REPORT_HASH    = 77164c906712ff7471f00800ce09c9c7f5ae49206c4b8024207564710c705fd3
 SESSION_COMMIT = 5c3ea0d2bb450ccbbfb5b25bc06825388a705b9d
-WITNESS        = dfb958d95f850fabb61b5f7812646ebdf367966a337530fcc02fd5e740368e88
+WITNESS        = 1ca2d872f3d7177cb37e2f1a07e6308350a1f7184a37da08bef919c5224ced2a
 ```
+
+Superseded from an earlier stamp (`REPORT_HASH dd0b14eb84...` /
+`WITNESS dfb958d95f...`, still visible in this PR's history) after this
+report grew a Real-backend evidence section in response to PR #15 review —
+the hypothesis itself was not modified after evaluation began (see its own
+"frozen" note above); this re-stamp covers added corroborating evidence,
+not a changed claim.
 
 `REPORT_HASH` is the sha256 of this file's content up to (and including) the
 line directly above this Witness section — i.e. everything before `## Witness`
@@ -274,13 +303,19 @@ Verifier procedure (reproducible by anyone):
 2. `sha256sum` that prefix → must equal `REPORT_HASH` above.
 3. Confirm `SESSION_COMMIT` is an ancestor of (or equal to) the PR's base.
 4. `printf '%s%s' REPORT_HASH SESSION_COMMIT | sha256sum` → must equal `WITNESS` above.
-5. Independently re-run `npm test` against the PR branch's HEAD and confirm 323/323 (0 fail) — the receipt this report claims.
+5. Independently re-run `npm test` against the PR branch's HEAD and confirm 327/327 (0 fail) — the receipt this report claims.
 
 ## Recommendation
 
 1. **Merge this fix** (draft PR) — closes a genuine, reproducible TOCTOU
    replay window in the actor/human credential single-use guard. Low risk,
-   small diff, 323/323 green, no behavior change outside the race window.
+   small diff, 327/327 green (323 original + 4 real-backend integration
+   tests added in response to review), no behavior change outside the race
+   window. The real-backend evidence above (real two-OS-process race,
+   durable after both writers exit) directly addresses the "crosses a real
+   persistence boundary the test double cannot attest" concern the PR
+   review's INCONCLUSIVE verdict raised — recommend re-review against the
+   updated head.
 2. **Decide a policy on the 39 transitive `npm audit` findings** — either
    pin/vendor a patched fork, isolate the `ruflo` sidecar process more
    strictly (it already runs out-of-process; consider a container/network
