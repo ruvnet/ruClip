@@ -1406,41 +1406,17 @@ export async function checkOperatingBudget(
 }
 
 // --- Pattern-store (DOMAIN-MODEL.md §2.4) -----------------------------------
-
-/** The three advisory namespaces from DOMAIN-MODEL.md §2.4, encoded into `type` (see file header, deviation 2). */
-export type RuclipPatternNamespace =
-  | 'ruclip/org-chart'
-  | 'ruclip/issue-templates'
-  | 'ruclip/approval-heuristics';
-
-export async function storePattern(
-  namespace: RuclipPatternNamespace,
-  pattern: string,
-  confidence = 0.8,
-  config?: AgentDbAdapterConfig,
-): Promise<void> {
-  await callTool('agentdb_pattern-store', { pattern, type: namespace, confidence }, config);
-}
-
-export interface PatternSearchResult {
-  pattern: string;
-  type: string;
-  confidence: number;
-}
-
-export async function searchPatterns(
-  namespace: RuclipPatternNamespace,
-  query: string,
-  topK = 5,
-  config?: AgentDbAdapterConfig,
-): Promise<PatternSearchResult[]> {
-  const result = await callTool<{ results?: PatternSearchResult[] }>(
-    'agentdb_pattern-search',
-    { query: `${namespace} ${query}`, topK },
-    config,
-  );
-  return (result.results ?? []).filter((r) => r.type === namespace);
-}
+// Extracted to ./pattern-store.ts (2026-09-07, architecture rotation) — see
+// that module's header for why. Re-exported so every existing
+// `from '../store/agentdb-adapter.js'` import of these names keeps working
+// unchanged, the same technique bridge-client.ts's and operating-budget.ts's
+// own extractions already established for this file.
+export {
+  type RuclipPatternNamespace,
+  type PatternSearchResult,
+  storePattern,
+  searchPatterns,
+} from './pattern-store.js';
 
 // --- Autogenous runtime governance audit trail (AUTOGENOUS-RUNTIME-GOVERNANCE.md §6) ---
 
