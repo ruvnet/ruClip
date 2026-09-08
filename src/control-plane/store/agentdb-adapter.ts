@@ -735,12 +735,16 @@ export async function listIssuesForGoal(
   assertSafeId(companyId, 'companyId');
   assertSafeId(goalId, 'goalId');
   const issues: Issue[] = [];
-  for (const tier of ['working', 'episodic'] as const) {
-    const result = await callTool<{ results?: Array<{ value?: string }> }>(
-      'agentdb_hierarchical-recall',
-      { query: `ruclip:company:${companyId}:goal:${goalId} issue`, tier, topK: 200 },
-      config,
-    );
+  const tierResults = await Promise.all(
+    (['working', 'episodic'] as const).map((tier) =>
+      callTool<{ results?: Array<{ value?: string }> }>(
+        'agentdb_hierarchical-recall',
+        { query: `ruclip:company:${companyId}:goal:${goalId} issue`, tier, topK: 200 },
+        config,
+      ),
+    ),
+  );
+  for (const result of tierResults) {
     for (const r of result.results ?? []) {
       if (typeof r.value !== 'string') continue;
       try {
@@ -797,12 +801,16 @@ export async function listApprovalTransitionsForCompany(
 ): Promise<ApprovalTransition[]> {
   assertSafeId(companyId, 'companyId');
   const transitions: ApprovalTransition[] = [];
-  for (const tier of ['working', 'episodic'] as const) {
-    const result = await callTool<{ results?: Array<{ key?: string; value?: string }> }>(
-      'agentdb_hierarchical-recall',
-      { query: companyKey(companyId), tier, topK: 500 },
-      config,
-    );
+  const tierResults = await Promise.all(
+    (['working', 'episodic'] as const).map((tier) =>
+      callTool<{ results?: Array<{ key?: string; value?: string }> }>(
+        'agentdb_hierarchical-recall',
+        { query: companyKey(companyId), tier, topK: 500 },
+        config,
+      ),
+    ),
+  );
+  for (const result of tierResults) {
     for (const r of result.results ?? []) {
       // A similarity query with extra words returned nothing on a real bridge;
       // the bare company prefix returns the company's records, filtered by key.
@@ -1211,12 +1219,16 @@ export async function listHeartbeatsForCompany(
 ): Promise<HeartbeatSchedule[]> {
   assertSafeId(companyId, 'companyId');
   const schedules: HeartbeatSchedule[] = [];
-  for (const tier of ['working', 'episodic'] as const) {
-    const result = await callTool<{ results?: Array<{ value?: string }> }>(
-      'agentdb_hierarchical-recall',
-      { query: `ruclip:company:${companyId} heartbeat`, tier, topK: 100 },
-      config,
-    );
+  const tierResults = await Promise.all(
+    (['working', 'episodic'] as const).map((tier) =>
+      callTool<{ results?: Array<{ value?: string }> }>(
+        'agentdb_hierarchical-recall',
+        { query: `ruclip:company:${companyId} heartbeat`, tier, topK: 100 },
+        config,
+      ),
+    ),
+  );
+  for (const result of tierResults) {
     for (const r of result.results ?? []) {
       if (typeof r.value !== 'string') continue;
       try {

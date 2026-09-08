@@ -16,6 +16,7 @@ import {
   listGoalsForCompany,
   listIssuesForGoal,
   listHeartbeatsForCompany,
+  listApprovalTransitionsForCompany,
 } from '../../src/control-plane/store/agentdb-adapter.js';
 import { buildDashboardSnapshot } from '../../src/control-plane/dashboard/build-snapshot.js';
 import type { Goal } from '../../src/control-plane/schema/goal.js';
@@ -182,6 +183,86 @@ test('listHeartbeatsForCompany returns every schedule for the company regardless
   assert.equal(pausedResult?.status, 'paused');
   assert.equal(pausedResult?.lastOutcome, 'application_budget_blocked');
 });
+
+// --- tier-scan concurrency (Dream Cycle 2026-09-08 performance finding) --------
+//
+// listIssuesForGoal, listHeartbeatsForCompany, and listApprovalTransitionsForCompany
+// each scan the 'working' and 'episodic' tiers via two independent
+// agentdb_hierarchical-recall calls whose results are merged into one
+// accumulator — same shape as checkOperatingBudget's per-session fan-out
+// (see heartbeats-and-comms.test.ts's concurrency test), except these three
+// previously ran their two tier calls sequentially (`for...of` + `await`)
+// instead of concurrently. Fixed to `Promise.all` across tiers; these tests
+// prove the overlap the same way checkOperatingBudget's test does.
+
+test(
+  'listIssuesForGoal scans working/episodic tiers concurrently, not one round trip at a time',
+  async () => {
+    const ROUND_TRIP_MS = 25;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const { config } = mockBridge({
+      'agentdb_hierarchical-recall': async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, ROUND_TRIP_MS));
+        inFlight -= 1;
+        return { results: [] };
+      },
+    });
+    const start = Date.now();
+    await listIssuesForGoal('co-1', 'goal-1', config);
+    const elapsedMs = Date.now() - start;
+    assert.ok(maxInFlight > 1, `expected overlapping tier fetches, observed max ${maxInFlight}`);
+    assert.ok(elapsedMs < 2 * ROUND_TRIP_MS, `expected concurrent fetch to beat 2 sequential round trips, took ${elapsedMs}ms`);
+  },
+);
+
+test(
+  'listHeartbeatsForCompany scans working/episodic tiers concurrently, not one round trip at a time',
+  async () => {
+    const ROUND_TRIP_MS = 25;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const { config } = mockBridge({
+      'agentdb_hierarchical-recall': async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, ROUND_TRIP_MS));
+        inFlight -= 1;
+        return { results: [] };
+      },
+    });
+    const start = Date.now();
+    await listHeartbeatsForCompany('co-1', config);
+    const elapsedMs = Date.now() - start;
+    assert.ok(maxInFlight > 1, `expected overlapping tier fetches, observed max ${maxInFlight}`);
+    assert.ok(elapsedMs < 2 * ROUND_TRIP_MS, `expected concurrent fetch to beat 2 sequential round trips, took ${elapsedMs}ms`);
+  },
+);
+
+test(
+  'listApprovalTransitionsForCompany scans working/episodic tiers concurrently, not one round trip at a time',
+  async () => {
+    const ROUND_TRIP_MS = 25;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const { config } = mockBridge({
+      'agentdb_hierarchical-recall': async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, ROUND_TRIP_MS));
+        inFlight -= 1;
+        return { results: [] };
+      },
+    });
+    const start = Date.now();
+    await listApprovalTransitionsForCompany('co-1', config);
+    const elapsedMs = Date.now() - start;
+    assert.ok(maxInFlight > 1, `expected overlapping tier fetches, observed max ${maxInFlight}`);
+    assert.ok(elapsedMs < 2 * ROUND_TRIP_MS, `expected concurrent fetch to beat 2 sequential round trips, took ${elapsedMs}ms`);
+  },
+);
 
 // --- buildDashboardSnapshot ----------------------------------------------------
 
