@@ -16,6 +16,11 @@ jobs:
           node-version: 20
       - run: npm install --no-audit --no-fund || true
       - run: npm run build
+      # Real gate as of 2026-09-09 (was a no-op stub, never wired into CI —
+      # docs/dream-cycle/2026-09-09-developer-experience-report.md): a
+      # dedicated, non-emitting tsc config catching unused locals/params,
+      # non-exhaustive switches, and implicit fallthrough returns.
+      - run: npm run lint
       - run: npm test
       # ruclip-metaharness (docs/design/RUCLIP-METAHARNESS.md §5): advisory
       # informational gate — no threshold to fail against yet (no baseline

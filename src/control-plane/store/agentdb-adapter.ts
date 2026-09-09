@@ -1464,6 +1464,15 @@ export interface AutogenousMutationRecord {
   observations: Array<{ at: string; fitness: FitnessVector; decision: Decision }>;
   createdAt: string;
   updatedAt: string;
+  /**
+   * The actual `Company.budget.hardStopThreshold` value this mutation
+   * proposes tightening to (§4). Not part of the real Autogenous `Mutation`
+   * wire type (routing_budget mutations carry no generic payload field) —
+   * this repo's own local addition, since without it the durable audit
+   * record has no way to say what value was actually proposed, only that a
+   * routing_budget mutation happened.
+   */
+  proposedHardStopThreshold: number;
 }
 
 /** Single tier ('working') for the whole record lifecycle — this is a low-volume governance/audit entity, not a high-churn one like Issue, so no tier-migration rule is needed (none is specified by the design). */

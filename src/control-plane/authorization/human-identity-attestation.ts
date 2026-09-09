@@ -49,7 +49,6 @@
  */
 import { randomUUID } from 'node:crypto';
 import {
-  actorCredentialFrame,
   ActorIdentityVerificationError,
   humanAttestedCredentialMarkerKey,
   HUMAN_ATTESTED_NAMESPACE,

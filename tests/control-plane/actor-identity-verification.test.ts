@@ -160,7 +160,6 @@ test(
 );
 
 test('verifyActorCredential rejects a validly-signed credential from an unadmitted issuer key', async () => {
-  const actor = baseActor();
   const { config } = mockBridge({ ...nonceMockHandlers() });
   const credential = await mintActorCredential('om-1', 'co-1', undefined, unadmittedIssuerConfig);
   const admittedIssuerKeys = await resolveAdmittedIssuerKeys(testIssuerConfig); // does NOT admit unadmittedIssuerConfig's key
