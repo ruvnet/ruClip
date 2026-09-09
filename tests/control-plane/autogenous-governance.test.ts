@@ -409,6 +409,11 @@ test('checkAndProposeBudgetMutation triggers on the 3rd consecutive WARNING-or-w
   assert.equal(third.record!.mutation.rollback_target, third.record!.parentGenome.hash);
   assert.ok(third.record!.controller, 'admitted mutation should have created a canary controller');
   assert.deepEqual(third.record!.controller!.audit, ['signed-record-1']);
+  // Was previously computed and silently dropped (`buildMutation`'s
+  // `newThreshold` parameter was never read) — the audit trail had no
+  // durable record of what value a proposed mutation actually asked to
+  // change to. 1.0 tightened by THRESHOLD_TIGHTEN_STEP (0.05) once.
+  assert.equal(third.record!.proposedHardStopThreshold, 0.95);
 
   const persistCall = storeCalls.find(
     (c) => c.toolName === 'agentdb_hierarchical-store' && (c.args.key as string).includes(':autogenous-mutation:'),
@@ -439,6 +444,10 @@ test('checkAndProposeBudgetMutation persists the record even when the mutation i
   assert.equal(third.record!.admitResponse.admitted, false);
   assert.equal(third.record!.admitResponse.error, 'InvariantRegressed');
   assert.equal(third.record!.controller, null);
+  // Rejected proposals are exactly where knowing what was asked for matters
+  // most for the audit trail — the field must be persisted regardless of
+  // admission outcome, not only on the admitted/canarying path.
+  assert.equal(third.record!.proposedHardStopThreshold, 0.95);
 });
 
 test('checkAndProposeBudgetMutation propagates AutogenousClientError (unreachable service) rather than swallowing it — §3 fail-closed', async () => {

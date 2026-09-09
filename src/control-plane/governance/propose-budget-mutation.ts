@@ -148,7 +148,7 @@ function buildParentGenome(companyId: string, currentThreshold: number): Genome 
   };
 }
 
-function buildMutation(parent: Genome, newThreshold: number): Mutation {
+function buildMutation(parent: Genome): Mutation {
   return {
     id: randomUUID(),
     parent_genome_hash: parent.hash,
@@ -190,7 +190,8 @@ export async function checkAndProposeBudgetMutation(
   }
 
   const parent = buildParentGenome(companyId, currentHardStopThreshold);
-  const mutation = buildMutation(parent, tightenedThreshold(currentHardStopThreshold));
+  const mutation = buildMutation(parent);
+  const proposedHardStopThreshold = tightenedThreshold(currentHardStopThreshold);
   const now = Math.floor(Date.now() / 1000);
 
   // §3's fail-closed contract: AutogenousClientError on unreachability
@@ -211,6 +212,7 @@ export async function checkAndProposeBudgetMutation(
     observations: [],
     createdAt: nowIso,
     updatedAt: nowIso,
+    proposedHardStopThreshold,
   };
 
   if (admitResponse.admitted) {
