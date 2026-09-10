@@ -279,10 +279,17 @@ test('addBlocksEdge writes a blocks edge with no cycle check (blocks is not a tr
   assert.equal(calls[0]?.args.targetId, 'entity:issue:issue-b');
 });
 
-test('getBlockerIssueIds strips the entity:issue: prefix and ignores non-issue neighbors', async () => {
+test('getBlockerIssueIds strips the entity:issue: prefix, ignores non-issue neighbors, and excludes the queried issue itself', async () => {
   const { config } = mockBridge({
+    // The real, installed @ruvector/graph-node native backend's
+    // kHopNeighbors(nodeId, k) includes nodeId itself in its own result —
+    // reproduced live against the actual installed package (see
+    // graphNeighbors' header comment). Every real k-hop response for
+    // issue-1 therefore carries entity:issue:issue-1 back alongside its
+    // genuine neighbors; this mock now matches that reality.
     'agentdb_graph-query': () => ({
       results: [
+        { nodeId: 'entity:issue:issue-1' },
         { nodeId: 'entity:issue:blocker-1' },
         { nodeId: 'entity:org-member:om-1' },
         { nodeId: 'entity:issue:blocker-2' },
@@ -293,14 +300,43 @@ test('getBlockerIssueIds strips the entity:issue: prefix and ignores non-issue n
   assert.deepEqual(blockers.sort(), ['blocker-1', 'blocker-2']);
 });
 
-test('getChildIssueIds strips the entity:issue: prefix and ignores non-issue neighbors', async () => {
+test('getChildIssueIds strips the entity:issue: prefix, ignores non-issue neighbors, and excludes the queried issue itself', async () => {
   const { config } = mockBridge({
     'agentdb_graph-query': () => ({
-      results: [{ nodeId: 'entity:issue:child-1' }, { nodeId: 'entity:goal:goal-1' }],
+      results: [
+        { nodeId: 'entity:issue:issue-1' },
+        { nodeId: 'entity:issue:child-1' },
+        { nodeId: 'entity:goal:goal-1' },
+      ],
     }),
   });
   const children = await getChildIssueIds('issue-1', config);
   assert.deepEqual(children, ['child-1']);
+});
+
+test('getChildIssueIds returns [] (not [issueId]) for a childless issue — the real backend echoes only the query node itself', async () => {
+  // Reproduces the real @ruvector/graph-node behavior for the "no real
+  // neighbors" case: kHopNeighbors('P', 1) on a node with no outgoing
+  // parent_of edge returns ['P'], not [] — confirmed by running the actual
+  // installed native binding, not inferred. Without the fix, this issue
+  // would appear to be its own child.
+  const { config } = mockBridge({
+    'agentdb_graph-query': () => ({
+      results: [{ nodeId: 'entity:issue:childless-issue' }],
+    }),
+  });
+  const children = await getChildIssueIds('childless-issue', config);
+  assert.deepEqual(children, []);
+});
+
+test('getBlockerIssueIds returns [] (not [issueId]) for an unblocked issue — the real backend echoes only the query node itself', async () => {
+  const { config } = mockBridge({
+    'agentdb_graph-query': () => ({
+      results: [{ nodeId: 'entity:issue:unblocked-issue' }],
+    }),
+  });
+  const blockers = await getBlockerIssueIds('unblocked-issue', config);
+  assert.deepEqual(blockers, []);
 });
 
 // --- Comment ---------------------------------------------------------------
