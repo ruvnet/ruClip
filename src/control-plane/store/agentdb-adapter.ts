@@ -338,6 +338,18 @@ export async function recordCausalEdge(
  * ids. Real response shape (`results`/`nodeId`, not `nodes`/`id`) — see
  * wouldCreateCycle's own header comment above for the ground-truth fix this
  * shares.
+ *
+ * Ground-truth correction (found tonight by running the real, currently
+ * installed native graph backend directly — `@ruvector/graph-node@2.1.0`,
+ * confirmed load-bearing via `npm ls @ruvector/graph-node` — rather than
+ * trusting this file's own prior assumption that a "neighbors" result
+ * excludes the node queried): the real backend's `kHopNeighbors(nodeId, k)`
+ * includes `nodeId` itself in its own result array, reproduced live even at
+ * `k=1`. Every existing test mocked `agentdb_graph-query` with a response
+ * that never echoed the query node back, so `getChildIssueIds`/
+ * `getBlockerIssueIds` (the only two callers) have been silently reporting
+ * every issue as its own child and its own blocker against the real
+ * backend. Filtered here, once, for both callers.
  */
 async function graphNeighbors(
   nodeId: string,
@@ -349,7 +361,7 @@ async function graphNeighbors(
     { nodeId, mode: 'k-hop', relation, depth: 1 },
     config,
   );
-  return (result.results ?? []).map((n) => n.nodeId);
+  return (result.results ?? []).map((n) => n.nodeId).filter((id) => id !== nodeId);
 }
 
 // --- Company ---------------------------------------------------------------
