@@ -593,17 +593,21 @@ async function checkAuthorizationGuard(
     );
   }
   const actor = 'credential' in authorization ? await resolveVerifiedActor(authorization, config) : authorization.actor;
-  // Security-hardening correction (security review round 7): mirrors
-  // applyApprovalTransition's own `actor.companyId !== companyId` check
-  // (added in this same slice). Without this, a credential verified for a
-  // DIFFERENT company than `companyId` wasn't explicitly rejected here —
-  // the subsequent recallOrgMember(companyId, actor.id, ...) below happens
-  // to fail closed in that case (it looks the id up in the wrong company's
-  // table and finds nothing), so this wasn't independently exploitable, but
-  // leaving it implicit/incidental instead of an explicit check is the same
-  // class of latent risk a future refactor of that recall could reopen —
-  // made deliberate here, matching the sibling code path exactly.
-  if ('credential' in authorization && actor.companyId !== companyId) {
+  // Security-hardening correction (security review round 7, widened round
+  // 8): mirrors applyApprovalTransition's own `actor.companyId !==
+  // companyId` check. Originally gated behind `'credential' in
+  // authorization` — round 7's own comment argued this was safe for the
+  // `{ actor }` shape because the subsequent recallOrgMember(companyId,
+  // actor.id, ...) below "happens to fail closed" on a genuine cross-company
+  // mismatch. That reasoning has exactly the gap the cross-tenant claims
+  // collision fix (claims-authorization.ts, ruvnet/ruClip#5 Finding 1)
+  // already demonstrated elsewhere: OrgMember ids are only charset-validated,
+  // never enforced globally unique, so a same-id record can genuinely exist
+  // in the target company too — recallOrgMember does not fail closed in
+  // that case, it finds a real (different) person. Unconditional now, for
+  // both authorization shapes — round 7's "the sibling code path" argument,
+  // completed rather than half-applied.
+  if (actor.companyId !== companyId) {
     throw new ApprovalGateViolationError(
       `checkAuthorizationGuard: verified actor '${actor.id}' belongs to company '${actor.companyId}', not '${companyId}'`,
     );
@@ -646,7 +650,17 @@ async function checkAuthorizationGuard(
     }
   }
 
-  await verifyActorHoldsClaim(issue.id, actor, config);
+  // Security-hardening correction (round 8): the external claims check was
+  // given the caller-supplied `actor` object, not `persistedActor` (the
+  // freshly-recalled ground truth this function already uses for the
+  // status and self-approval checks immediately above). `actor`'s `kind`/
+  // `role` feed directly into the claimant string ruflo's claims system is
+  // queried with (orgMemberClaimant, claims-authorization.ts) — for the
+  // `{ actor }` shape those fields are exactly as caller-controlled as the
+  // `status` field round 6 already stopped trusting, and the `companyId`
+  // field round 7 (widened above) already stopped trusting. `persistedActor`
+  // is the one value in scope here that a caller cannot forge.
+  await verifyActorHoldsClaim(issue.id, persistedActor, config);
 }
 
 /**
