@@ -173,15 +173,30 @@ test('persistOrgMember with a manager checks for cycles then writes reports_to',
 });
 
 test('recordCausalEdge refuses a reports_to edge that would close a cycle', async () => {
-  const { config } = mockBridge({
+  // 'agentdb_causal-edge' is deliberately mocked to succeed (not left
+  // unregistered) — without this, a cycle-detection bug that let
+  // wouldCreateCycle wrongly return false would still hit the write path,
+  // find no handler for 'agentdb_causal-edge', and reject with the generic
+  // "Could not reach AgentDB MCP bridge" AgentDbBridgeError (see
+  // invokeTool's catch-all in bridge-client.ts) — indistinguishable from a
+  // genuine cycle rejection to a bare `assert.rejects(fn, AgentDbBridgeError)`.
+  // Confirmed empirically: forcing wouldCreateCycle to always return false
+  // left this test passing unchanged against the version of this test that
+  // shipped without this handler. Asserting the exact message and that the
+  // edge write never happens is what actually pins the cycle-rejection path.
+  const { calls, config } = mockBridge({
     // The proposed target (om-1) can already reach the proposed source (om-2)
     // one hop away, so adding om-2 -> om-1 would close a cycle.
     'agentdb_graph-query': () => ({ results: [{ nodeId: 'entity:org-member:om-2' }] }),
+    'agentdb_causal-edge': () => ({ success: true }),
   });
   await assert.rejects(
     () => recordCausalEdge('entity:org-member:om-2', 'entity:org-member:om-1', 'reports_to', config),
-    AgentDbBridgeError,
+    (err: unknown) =>
+      err instanceof AgentDbBridgeError &&
+      /would close a cycle/.test(err.message),
   );
+  assert.deepEqual(calls.map((c) => c.toolName), ['agentdb_graph-query']);
 });
 
 test('recordCausalEdge refuses a self-referential parent_of edge without calling the bridge', async () => {
