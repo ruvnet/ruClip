@@ -90,6 +90,7 @@ import type {
   FitnessVector,
 } from '../governance/autogenous-client.js';
 import { AgentDbBridgeError, callTool, assertSafeId, type AgentDbAdapterConfig } from './bridge-client.js';
+import { storeAtTier, deleteFromTier, recallByKey } from './hierarchical-store.js';
 
 // Re-exported so every existing `from '../store/agentdb-adapter.js'` import
 // of these three names keeps working unchanged — see bridge-client.ts's
@@ -192,78 +193,13 @@ export function tierForIssueStatus(status: Issue['status']): MemoryTier {
   return status === 'done' || status === 'cancelled' ? 'episodic' : 'working';
 }
 
-// --- Generic hierarchical-store wrappers ----------------------------------
-
-async function storeAtTier(
-  key: string,
-  value: unknown,
-  tier: MemoryTier,
-  config?: AgentDbAdapterConfig,
-): Promise<void> {
-  const result = await callTool<{ success?: boolean; error?: string }>(
-    'agentdb_hierarchical-store',
-    { key, value: JSON.stringify(value), tier },
-    config,
-  );
-  assertToolSucceeded('agentdb_hierarchical-store', key, result);
-}
-
-/**
- * The bridge reports some failures (key too long, backend refusal) as
- * `{ success: false, error }` inside an ordinary result, not as a JSON-RPC
- * error — so a write can "succeed" while nothing is stored. Treat that as
- * a failure here, once, for every store/delete.
- */
-function assertToolSucceeded(tool: string, key: string, result: { success?: boolean; error?: string } | null | undefined): void {
-  if (result && result.success === false) {
-    throw new AgentDbBridgeError(`AgentDB tool '${tool}' refused key '${key}': ${result.error ?? 'unknown error'}`);
-  }
-}
-
-async function deleteFromTier(key: string, tier: MemoryTier, config?: AgentDbAdapterConfig): Promise<void> {
-  const result = await callTool<{ success?: boolean; error?: string }>('agentdb_hierarchical-delete', { key, tier }, config);
-  assertToolSucceeded('agentdb_hierarchical-delete', key, result);
-}
-
-/**
- * Recall by exact key. agentdb_hierarchical-recall is a semantic/BM25 search
- * over `query`, not an exact-key get — we search with the key as the query
- * and defensively keep only a result whose own key matches exactly.
- */
-const RECALL_BY_KEY_PAGE_SIZES = [200, 1000] as const;
-
-async function recallByKey<T>(
-  key: string,
-  tier: MemoryTier | undefined,
-  config?: AgentDbAdapterConfig,
-): Promise<T | null> {
-  // agentdb_hierarchical-recall is a similarity/lexical search, not an exact-key read: the
-  // exact key is only somewhere in the result page. On a real bridge a company with more
-  // than ten sibling records (members, issues, heartbeats all share the company prefix)
-  // pushed the exact key out of a topK:10 page, so recallCompany() returned null and every
-  // caller that starts with "recall the company" silently did nothing (ruvnet/ruClip#5).
-  // Page wide first, then widen once more before giving up.
-  for (const topK of RECALL_BY_KEY_PAGE_SIZES) {
-    const result = await callTool<{ results?: Array<{ key?: string; id?: string; value?: string }> }>(
-      'agentdb_hierarchical-recall',
-      { query: key, tier, topK },
-      config,
-    );
-    const results = result.results ?? [];
-    const match = results.find((r) => r.key === key || r.id === key);
-    if (match) {
-      if (typeof match.value !== 'string') return null;
-      try {
-        return JSON.parse(match.value) as T;
-      } catch {
-        return null;
-      }
-    }
-    // A short page means the store has no more candidates; a full page means widen.
-    if (results.length < topK) return null;
-  }
-  return null;
-}
+// --- Generic hierarchical-store wrappers -----------------------------------
+// storeAtTier/deleteFromTier/recallByKey now live in hierarchical-store.ts
+// (imported above) — extracted 2026-09-17 (architecture rotation) as a
+// dependency-free leaf atop bridge-client.ts, so a future extraction of any
+// bounded context below that itself needs store/delete/recall doesn't hit
+// the same import-cycle class bridge-client.ts's own header documents
+// already breaking once for assertSafeId/callTool. See that file's header.
 
 // --- Causal edges (DOMAIN-MODEL.md §2.3) ----------------------------------
 
