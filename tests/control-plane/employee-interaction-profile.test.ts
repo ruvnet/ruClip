@@ -357,6 +357,68 @@ test('applyApprovalTransition succeeds even when recomputeInteractionSignals fai
   assert.equal(result.issue.approvalState, 'approved');
 });
 
+// Dream Cycle 2026-09-18 performance finding: the block above proves
+// recomputeInteractionSignals's FAILURES don't block/fail the approval —
+// but the call was still `await`ed on success, so its own latency (a
+// company-wide listApprovalTransitionsForCompany scan) sat directly in the
+// approve/reject critical path despite the result being fully discarded.
+// deps.notifications has the identical "best-effort, never blocks" contract
+// and is correctly fire-and-forget (see heartbeat/fire-heartbeat.ts:34's
+// `void notifications.publish(event).catch(() => {})`) — this test proves
+// recomputeInteractionSignals now gets the same treatment.
+test('applyApprovalTransition with deps.interactionLearning: true does not block on recomputeInteractionSignals\'s own latency — fire-and-forget, same non-blocking contract as deps.notifications', async () => {
+  const submit = baseTransition({ id: 'transition-submit', actorId: 'om-submitter', fromState: 'draft', toState: 'pending' });
+  const pendingIssue = baseIssue({ approvalState: 'pending', approvalTransitionRef: 'transition-submit' });
+  const approver = baseActor({ id: 'om-approver', kind: 'agent', role: 'Engineer' });
+  const consentedProfile = baseProfile({ id: 'om-approver', orgMemberId: 'om-approver', consentedSignalTypes: ['internal-timing'] });
+  const ROUND_TRIP_MS = 50;
+  const { config } = mockBridge({
+    'agentdb_hierarchical-recall': async (args) => {
+      if (args.tier === 'working' && args.query === 'ruclip:company:co-1:goal:goal-1:issue:issue-1') {
+        return { results: [{ key: args.query, value: JSON.stringify(pendingIssue) }] };
+      }
+      if (args.tier === 'semantic' && args.query === orgMemberRecallKey('co-1', 'om-approver')) {
+        return { results: [{ key: args.query, value: JSON.stringify(approver) }] };
+      }
+      // Guard C's own recallApprovalTransition(submit.id) re-verification —
+      // unrelated to tonight's finding; found immediately on the 'working'
+      // tier (the realistic case for a just-submitted transition) so it
+      // never falls through to its own 'episodic' fallback call.
+      if (args.query === 'ruclip:company:co-1:approval-transition:transition-submit') {
+        return args.tier === 'working' ? { results: [{ key: args.query, value: JSON.stringify(submit) }] } : { results: [] };
+      }
+      // listApprovalTransitionsForCompany's own company-wide tier scan —
+      // simulate a slow history fetch to prove it no longer sits in the
+      // approve/reject caller's own critical path.
+      await new Promise((resolve) => setTimeout(resolve, ROUND_TRIP_MS));
+      return { results: [] };
+    },
+    'agentdb_hierarchical-store': () => ({ success: true }),
+    'agentdb_causal-edge': () => ({ success: true }),
+    'claims_accept-handoff': () => ({ success: true }),
+    'claims_list': activeClaimFor(approver, 'issue-1'),
+    'memory_retrieve': (args) =>
+      args.key === profileKey('co-1', 'om-approver') ? { found: true, value: consentedProfile } : { found: false },
+    'memory_store': () => ({ success: true }),
+  });
+  const start = Date.now();
+  const result = await applyApprovalTransition(
+    'co-1',
+    pendingIssue,
+    'approve',
+    await credentialFor(approver),
+    submit,
+    { interactionLearning: true },
+    config,
+  );
+  const elapsedMs = Date.now() - start;
+  assert.equal(result.issue.approvalState, 'approved');
+  assert.ok(
+    elapsedMs < ROUND_TRIP_MS,
+    `expected applyApprovalTransition to resolve before recomputeInteractionSignals's own ${ROUND_TRIP_MS}ms tier scan completed, took ${elapsedMs}ms`,
+  );
+});
+
 test('applyApprovalTransition with deps.interactionLearning: true triggers recomputeInteractionSignals for approve/reject', async () => {
   const submit = baseTransition({ id: 'transition-submit', actorId: 'om-submitter', fromState: 'draft', toState: 'pending' });
   const pendingIssue = baseIssue({ approvalState: 'pending', approvalTransitionRef: 'transition-submit' });
@@ -387,6 +449,12 @@ test('applyApprovalTransition with deps.interactionLearning: true triggers recom
     { interactionLearning: true },
     config,
   );
+  // Dream Cycle 2026-09-18: recomputeInteractionSignals is now fire-and-forget
+  // (see the dedicated latency test above), so its first call is no longer
+  // guaranteed to have landed by the time applyApprovalTransition's own
+  // promise resolves — flush one macrotask tick to let the detached
+  // background call reach its first await.
+  await new Promise((resolve) => setTimeout(resolve, 0));
   assert.ok(calls.some((c) => c.toolName === 'memory_retrieve' && c.args.key === profileKey('co-1', 'om-approver')));
 });
 
