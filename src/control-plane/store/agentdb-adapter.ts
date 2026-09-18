@@ -923,10 +923,13 @@ export async function applyApprovalTransition(
 
   // EMPLOYEE-INTERACTION-PROFILE.md §4 — best-effort, same non-blocking
   // contract deps.notifications already has: a failure here must never
-  // fail the approval decision itself. Default false/omitted — existing
-  // callers are unaffected.
+  // fail the approval decision itself, and (Dream Cycle 2026-09-18) its
+  // result is discarded either way, so it must not block on its own
+  // latency either — fire-and-forget, same shape as
+  // heartbeat/fire-heartbeat.ts's `void notifications.publish(...).catch(...)`.
+  // Default false/omitted — existing callers are unaffected.
   if (deps.interactionLearning && (action === 'approve' || action === 'reject')) {
-    await recomputeInteractionSignals(companyId, actor.id, config).catch(() => {});
+    void recomputeInteractionSignals(companyId, actor.id, config).catch(() => {});
   }
 
   // HEARTBEATS-AND-COMMS.md §5 — best-effort; a lost/degraded notification
