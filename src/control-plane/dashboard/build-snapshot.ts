@@ -13,7 +13,6 @@ import {
   listGoalsForCompany,
   listIssuesForGoal,
   listHeartbeatsForCompany,
-  getChildIssueIds,
   getBlockerIssueIds,
   operatingBudgetLevel,
   DEFAULT_OPERATING_BUDGET_THRESHOLDS,
@@ -132,9 +131,12 @@ async function buildIssueSnapshot(
   cache: OrgMemberCache,
   config?: AgentDbAdapterConfig,
 ): Promise<DashboardIssueSnapshot> {
-  const [assignee, childIssueIds, blockerIssueIds] = await Promise.all([
+  // childIssueIds is NOT fetched here — see buildDashboardSnapshot's
+  // post-processing pass, which derives it from Issue.parentId instead of
+  // the causal graph. Left `[]` here, filled in once every company issue is
+  // known.
+  const [assignee, blockerIssueIds] = await Promise.all([
     resolveOrgMemberRef(companyId, issue.assigneeId, cache, config),
-    getChildIssueIds(issue.id, config),
     getBlockerIssueIds(issue.id, config),
   ]);
   return {
@@ -146,7 +148,7 @@ async function buildIssueSnapshot(
     assigneeId: issue.assigneeId,
     assignee,
     parentId: issue.parentId,
-    childIssueIds,
+    childIssueIds: [],
     blockerIssueIds,
   };
 }
@@ -212,24 +214,41 @@ export async function buildDashboardSnapshot(
     ),
   ]);
 
-  // Security-hardening correction (security review round 8): getChildIssueIds/
-  // getBlockerIssueIds key their causal-graph nodes via entityNodeId('issue',
-  // issueId) = `entity:issue:{issueId}` — no companyId component, true since
+  // Security-hardening correction (security review round 8): getBlockerIssueIds
+  // keys its causal-graph nodes via entityNodeId('issue', issueId) =
+  // `entity:issue:{issueId}` — no companyId component, true since
   // persistIssue's very first parent_of/blocks edge write. If two different
   // companies' issues ever collide on id (assertValidIssue only enforces the
   // safe-id charset, not global uniqueness), a foreign company's issue id
-  // could surface in childIssueIds/blockerIssueIds and be displayed verbatim
-  // as though it belonged to this company — confirmed by an independent test.
-  // No new AgentDB calls are needed to close this: by this point every issue
-  // id that genuinely belongs to `companyId` is already known (collected
-  // across every goal above), so filter both fields against that set —
-  // anything not in it is dropped rather than displayed.
-  const companyIssueIds = new Set(goalSnapshots.flatMap((g) => g.issues.map((i) => i.id)));
-  for (const goal of goalSnapshots) {
-    for (const issue of goal.issues) {
-      issue.childIssueIds = issue.childIssueIds.filter((id) => companyIssueIds.has(id));
-      issue.blockerIssueIds = issue.blockerIssueIds.filter((id) => companyIssueIds.has(id));
-    }
+  // could surface in blockerIssueIds and be displayed verbatim as though it
+  // belonged to this company — confirmed by an independent test. No new
+  // AgentDB calls are needed to close this: by this point every issue id
+  // that genuinely belongs to `companyId` is already known (collected across
+  // every goal above), so filter it against that set — anything not in it is
+  // dropped rather than displayed.
+  const allIssues = goalSnapshots.flatMap((g) => g.issues);
+  const companyIssueIds = new Set(allIssues.map((i) => i.id));
+
+  // Dream Cycle 2026-09-20 correctness fix: childIssueIds is now derived
+  // from each issue's own authoritative `parentId` field, not from
+  // getChildIssueIds' causal-graph k-hop lookup. Ground truth (confirmed
+  // live against the actually-installed `@ruvector/graph-node@2.1.0`
+  // backend — see dashboard-child-relation-contamination.test.ts): that
+  // backend's k-hop traversal ignores the `relation` filter entirely on its
+  // default, load-bearing code path, so an issue's `blocks`-only neighbor
+  // could leak into its childIssueIds. `parentId` needs no graph call and
+  // cannot be contaminated by an unrelated edge type.
+  const childIssueIdsByParentId = new Map<string, string[]>();
+  for (const issue of allIssues) {
+    if (issue.parentId === null) continue;
+    const siblings = childIssueIdsByParentId.get(issue.parentId) ?? [];
+    siblings.push(issue.id);
+    childIssueIdsByParentId.set(issue.parentId, siblings);
+  }
+
+  for (const issue of allIssues) {
+    issue.childIssueIds = childIssueIdsByParentId.get(issue.id) ?? [];
+    issue.blockerIssueIds = issue.blockerIssueIds.filter((id) => companyIssueIds.has(id));
   }
 
   const utilizationPct = company.budget.total > 0 ? company.budget.spent / company.budget.total : 0;

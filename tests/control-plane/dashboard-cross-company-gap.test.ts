@@ -17,28 +17,40 @@
  * many real findings in its history deserves the negative result stated as
  * plainly as a positive one.
  *
- * FINDING (test below), FIXED (security review round 8): `getChildIssueIds`/
- * `getBlockerIssueIds` (store/agentdb-adapter.ts) key their causal-graph
- * nodes via `entityNodeId('issue', issueId)` = `entity:issue:{issueId}` —
- * no companyId component at all. This is a pre-existing architectural
- * property (true since persistIssue's very first `parent_of`/`blocks` edge
- * writes), not new to this slice — but this dashboard slice was the FIRST
- * consumer that surfaced the RESULT of that unscoped lookup directly to a
- * viewer, cross-referenced against one specific company's own Goal/Issue
- * listing, with no verification the returned neighbor id actually belonged
- * to that company. If two different companies' issues ever collide on id
- * (a real possibility if issue ids are ever sequential/predictable rather
- * than globally-unique UUIDs — nothing in `assertValidIssue` enforces
- * global uniqueness, only the safe-id charset), Company A's dashboard would
- * have displayed a relationship to an issue that isn't actually any of
- * Company A's own issues at all. Fixed in `buildDashboardSnapshot`: by the
- * time every goal's issues are assembled, the full set of issue ids that
+ * FINDING (test below), FIXED (security review round 8): `getBlockerIssueIds`
+ * (store/agentdb-adapter.ts) keys its causal-graph nodes via
+ * `entityNodeId('issue', issueId)` = `entity:issue:{issueId}` — no companyId
+ * component at all. This is a pre-existing architectural property (true
+ * since persistIssue's very first `parent_of`/`blocks` edge writes), not new
+ * to this slice — but this dashboard slice was the FIRST consumer that
+ * surfaced the RESULT of that unscoped lookup directly to a viewer,
+ * cross-referenced against one specific company's own Goal/Issue listing,
+ * with no verification the returned neighbor id actually belonged to that
+ * company. If two different companies' issues ever collide on id (a real
+ * possibility if issue ids are ever sequential/predictable rather than
+ * globally-unique UUIDs — nothing in `assertValidIssue` enforces global
+ * uniqueness, only the safe-id charset), Company A's dashboard would have
+ * displayed a relationship to an issue that isn't actually any of Company
+ * A's own issues at all. Fixed in `buildDashboardSnapshot`: by the time
+ * every goal's issues are assembled, the full set of issue ids that
  * genuinely belong to `companyId` is already known (no new AgentDB calls
- * needed) — `childIssueIds`/`blockerIssueIds` are now filtered against that
- * set, dropping anything not in it rather than displaying it. The test
- * below doesn't require an actual id collision to demonstrate the gap — it
- * shows a childIssueIds entry with NO corresponding issue anywhere in the
- * company's own goals/issues list is now dropped instead of displayed.
+ * needed) — `blockerIssueIds` is filtered against that set, dropping
+ * anything not in it rather than displaying it. The test below doesn't
+ * require an actual id collision to demonstrate the gap — it shows a
+ * blockerIssueIds entry with NO corresponding issue anywhere in the
+ * company's own goals/issues list is dropped instead of displayed.
+ *
+ * UPDATED (Dream Cycle 2026-09-20, DEEP=correctness): this test originally
+ * exercised `childIssueIds` via the same `agentdb_graph-query` mock (a
+ * `parent_of` edge to a foreign-company id). `childIssueIds` is no longer
+ * graph-derived at all — see dashboard-child-relation-contamination.test.ts
+ * for why (the real k-hop backend ignores `relation` entirely) — it is now
+ * computed from each Issue's own authoritative `parentId` field, which
+ * structurally cannot reference a foreign company's issue once every issue
+ * is already scoped to `companyId` before that computation runs. Asserting
+ * `childIssueIds` here would no longer exercise the graph-cross-company gap
+ * this file is about, so this test now targets `blockerIssueIds` instead —
+ * the one field still genuinely exposed to this defect.
  *
  * No live AgentDB instance — mockBridge, same pattern the coder's own test
  * file establishes for buildDashboardSnapshot.
@@ -101,8 +113,8 @@ function baseIssue(overrides: Partial<Issue> = {}): Issue {
 }
 
 test(
-  'FIXED: buildDashboardSnapshot drops a childIssueIds entry that does not correspond to any issue in the ' +
-    "company's own goals/issues list, instead of embedding it verbatim — getChildIssueIds' causal-graph " +
+  'FIXED: buildDashboardSnapshot drops a blockerIssueIds entry that does not correspond to any issue in the ' +
+    "company's own goals/issues list, instead of embedding it verbatim — getBlockerIssueIds' causal-graph " +
     'lookup is still keyed only by bare issueId (no companyId component), but buildDashboardSnapshot now ' +
     'cross-checks every returned neighbor against the company whose dashboard is being built before display',
   async () => {
@@ -128,11 +140,11 @@ test(
         return { results: [] };
       },
       'agentdb_graph-query': (args) => {
-        // Simulates a parent_of edge that was actually written by a
+        // Simulates a blocks edge that was actually written by a
         // DIFFERENT company's persistIssue call for an issue that happens
         // to share the id 'issue-shared-id' — reachable because
         // entityNodeId('issue', id) has no companyId component at all.
-        if (args.nodeId === 'entity:issue:issue-shared-id' && args.relation === 'parent_of') {
+        if (args.nodeId === 'entity:issue:issue-shared-id' && args.relation === 'blocks') {
           return { results: [{ nodeId: 'entity:issue:issue-belongs-to-company-b' }] };
         }
         return { results: [] };
@@ -148,13 +160,13 @@ test(
     const issueSnapshot = snapshot!.goals[0]!.issues.find((i) => i.id === 'issue-shared-id')!;
 
     assert.deepEqual(
-      issueSnapshot.childIssueIds,
+      issueSnapshot.blockerIssueIds,
       [],
       'the foreign id must be dropped, not embedded, since it does not belong to this company',
     );
     assert.ok(
       !allIssueIdsInThisCompanysSnapshot.has('issue-belongs-to-company-b'),
-      "sanity check: the referenced 'child' issue is genuinely not anywhere in company co-A's own goals/issues",
+      "sanity check: the referenced 'blocker' issue is genuinely not anywhere in company co-A's own goals/issues",
     );
   },
 );
