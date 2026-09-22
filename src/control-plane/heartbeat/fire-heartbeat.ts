@@ -67,14 +67,24 @@ export async function fireHeartbeat(
   deps: FireHeartbeatDeps,
   config?: AgentDbAdapterConfig,
 ): Promise<FireHeartbeatResult> {
-  const company = await recallCompany(schedule.companyId, config);
+  // §3 step 1 recalls "the target Issue (or Goal) and its Company" as one
+  // step, not an ordered pair — neither read depends on the other's result,
+  // only on `schedule.target` (already known). Dream Cycle 2026-09-22
+  // performance finding: fetch both concurrently instead of sequentially,
+  // since fireHeartbeat runs once per due schedule on every scheduler tick.
+  const [company, issue, goal] = await Promise.all([
+    recallCompany(schedule.companyId, config),
+    schedule.target.kind === 'issue'
+      ? recallIssue(schedule.companyId, schedule.target.goalId, schedule.target.issueId, config)
+      : Promise.resolve(null),
+    schedule.target.kind === 'goal' ? recallGoal(schedule.companyId, schedule.target.goalId, config) : Promise.resolve(null),
+  ]);
   if (!company) {
     return pauseAndPersist(schedule, 'error', deps.notifications, config);
   }
 
   // Gate 1 — application budget (HEARTBEATS-AND-COMMS.md §2/§3 step 2).
   if (schedule.target.kind === 'issue') {
-    const issue = await recallIssue(schedule.companyId, schedule.target.goalId, schedule.target.issueId, config);
     if (!issue) {
       return pauseAndPersist(schedule, 'error', deps.notifications, config);
     }
@@ -85,7 +95,6 @@ export async function fireHeartbeat(
       }
     }
   } else {
-    const goal = await recallGoal(schedule.companyId, schedule.target.goalId, config);
     if (!goal) {
       return pauseAndPersist(schedule, 'error', deps.notifications, config);
     }

@@ -527,6 +527,135 @@ test('fireHeartbeat Gate 1 for a goal-target heartbeat checks Goal.budgetAllocat
   assert.equal(result.outcome, 'ok');
 });
 
+// --- fireHeartbeat: company/target lookup concurrency -------------------------
+
+test(
+  'fireHeartbeat recalls the target Company and Issue/Goal concurrently, not one round trip at a ' +
+    'time — Dream Cycle 2026-09-22 performance finding: fireHeartbeat runs on every due heartbeat ' +
+    'tick, so an avoidable sequential pair of independent reads is O(2x) latency on the hot path',
+  async () => {
+    const ROUND_TRIP_MS = 60;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const company = baseCompany();
+    const issue = baseIssue({ budgetImpact: 0 });
+    const schedule = baseSchedule();
+    const scheduleKey = heartbeatKey(schedule.companyId, schedule.target, schedule.id);
+    const withDelay = async <T>(value: T): Promise<T> => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, ROUND_TRIP_MS));
+      inFlight -= 1;
+      return value;
+    };
+    // Only the FIRST Company/Issue lookup is delayed — isolates tonight's
+    // fix (fireHeartbeat's own initial pair) from persistHeartbeatSchedule's
+    // separate, pre-existing, out-of-scope re-fetch of the same Issue for
+    // its own existence/goalId validation (agentdb-adapter.ts:1102), which
+    // this test deliberately does not touch.
+    let companyDelayed = false;
+    let issueDelayed = false;
+    const { config } = mockBridge({
+      'agentdb_hierarchical-recall': (args) => {
+        if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1') {
+          if (companyDelayed) return { results: [{ key: args.query, value: JSON.stringify(company) }] };
+          companyDelayed = true;
+          return withDelay({ results: [{ key: args.query, value: JSON.stringify(company) }] });
+        }
+        if (args.tier === 'working' && args.query === 'ruclip:company:co-1:goal:goal-1:issue:issue-1') {
+          if (issueDelayed) return { results: [{ key: args.query, value: JSON.stringify(issue) }] };
+          issueDelayed = true;
+          return withDelay({ results: [{ key: args.query, value: JSON.stringify(issue) }] });
+        }
+        // persistHeartbeatSchedule's no-actor re-persist recalls the
+        // already-existing schedule first (security hardening) — simulate it.
+        if (args.tier === 'working' && args.query === scheduleKey) {
+          return { results: [{ key: scheduleKey, value: JSON.stringify(schedule) }] };
+        }
+        return { results: [] };
+      },
+      'agentdb_hierarchical-store': () => ({ success: true }),
+      'agentdb_causal-edge': () => ({ success: true }),
+      'memory_retrieve': () => ({ found: false }),
+    });
+    const start = Date.now();
+    const result = await fireHeartbeat(schedule, {}, config);
+    const elapsedMs = Date.now() - start;
+    assert.equal(result.outcome, 'ok');
+    assert.ok(
+      maxInFlight > 1,
+      `expected overlapping Company/Issue fetches (proof of concurrency), observed max ${maxInFlight}`,
+    );
+    assert.ok(
+      elapsedMs < 1.5 * ROUND_TRIP_MS,
+      `expected concurrent fetch (~${ROUND_TRIP_MS}ms) to beat 2 sequential round trips ` +
+        `(${2 * ROUND_TRIP_MS}ms), took ${elapsedMs}ms`,
+    );
+  },
+);
+
+test(
+  'fireHeartbeat recalls the target Company and Goal concurrently for a goal-target schedule',
+  async () => {
+    const ROUND_TRIP_MS = 60;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const company = baseCompany();
+    const goal = baseGoal({ budgetAllocation: null });
+    const schedule = baseSchedule({ target: { kind: 'goal', goalId: 'goal-1' } });
+    const scheduleKey = heartbeatKey(schedule.companyId, schedule.target, schedule.id);
+    const withDelay = async <T>(value: T): Promise<T> => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, ROUND_TRIP_MS));
+      inFlight -= 1;
+      return value;
+    };
+    // Only the FIRST Company/Goal lookup is delayed — isolates tonight's fix
+    // from persistHeartbeatSchedule's separate, pre-existing, out-of-scope
+    // re-fetch of the same Goal for its own existence check
+    // (agentdb-adapter.ts:1119), which this test deliberately does not touch.
+    let companyDelayed = false;
+    let goalDelayed = false;
+    const { config } = mockBridge({
+      'agentdb_hierarchical-recall': (args) => {
+        if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1') {
+          if (companyDelayed) return { results: [{ key: args.query, value: JSON.stringify(company) }] };
+          companyDelayed = true;
+          return withDelay({ results: [{ key: args.query, value: JSON.stringify(company) }] });
+        }
+        if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1:goal:goal-1') {
+          if (goalDelayed) return { results: [{ key: args.query, value: JSON.stringify(goal) }] };
+          goalDelayed = true;
+          return withDelay({ results: [{ key: args.query, value: JSON.stringify(goal) }] });
+        }
+        // persistHeartbeatSchedule's no-actor re-persist recalls the
+        // already-existing schedule first (security hardening) — simulate it.
+        if (args.tier === 'working' && args.query === scheduleKey) {
+          return { results: [{ key: scheduleKey, value: JSON.stringify(schedule) }] };
+        }
+        return { results: [] };
+      },
+      'agentdb_hierarchical-store': () => ({ success: true }),
+      'agentdb_causal-edge': () => ({ success: true }),
+      'memory_retrieve': () => ({ found: false }),
+    });
+    const start = Date.now();
+    const result = await fireHeartbeat(schedule, {}, config);
+    const elapsedMs = Date.now() - start;
+    assert.equal(result.outcome, 'ok');
+    assert.ok(
+      maxInFlight > 1,
+      `expected overlapping Company/Goal fetches (proof of concurrency), observed max ${maxInFlight}`,
+    );
+    assert.ok(
+      elapsedMs < 1.5 * ROUND_TRIP_MS,
+      `expected concurrent fetch (~${ROUND_TRIP_MS}ms) to beat 2 sequential round trips ` +
+        `(${2 * ROUND_TRIP_MS}ms), took ${elapsedMs}ms`,
+    );
+  },
+);
+
 // --- fireHeartbeat: Gate 2 (operating-spend circuit breaker) -----------------
 
 test('fireHeartbeat Gate 2 blocks and pauses on HARD_STOP even when Gate 1 passes', async () => {
