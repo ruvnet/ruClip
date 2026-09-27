@@ -1058,7 +1058,20 @@ export async function persistHeartbeatSchedule(
 ): Promise<void> {
   assertValidHeartbeatSchedule(schedule);
 
-  const stored = await recallHeartbeatSchedule(schedule.companyId, schedule.target, schedule.id, config);
+  // Dream Cycle 2026-09-27 performance finding: the previous-state read
+  // (`stored`) and the target-existence read (`issue`/`goal`) are
+  // independent — neither depends on the other's result, only on
+  // `schedule`/`schedule.target`, both already known — so fetch them
+  // concurrently instead of one round trip at a time. Every throw/validation
+  // check below runs in the same order against the same values as before;
+  // only the two network round trips that feed them now overlap.
+  const [stored, issue, goal] = await Promise.all([
+    recallHeartbeatSchedule(schedule.companyId, schedule.target, schedule.id, config),
+    schedule.target.kind === 'issue'
+      ? recallIssue(schedule.companyId, schedule.target.goalId, schedule.target.issueId, config)
+      : Promise.resolve(null),
+    schedule.target.kind === 'goal' ? recallGoal(schedule.companyId, schedule.target.goalId, config) : Promise.resolve(null),
+  ]);
   if (stored === null && !authorization) {
     throw new ApprovalGateViolationError(
       `Creating HeartbeatSchedule '${schedule.id}' requires an acting OrgMember (HEARTBEATS-AND-COMMS.md §6) — ` +
@@ -1099,7 +1112,6 @@ export async function persistHeartbeatSchedule(
 
   let targetNodeId: string;
   if (schedule.target.kind === 'issue') {
-    const issue = await recallIssue(schedule.companyId, schedule.target.goalId, schedule.target.issueId, config);
     if (!issue) {
       throw new ApprovalGateViolationError(
         `HeartbeatSchedule '${schedule.id}' targets issue '${schedule.target.issueId}' which does not exist`,
@@ -1116,7 +1128,6 @@ export async function persistHeartbeatSchedule(
     }
     targetNodeId = entityNodeId('issue', schedule.target.issueId);
   } else {
-    const goal = await recallGoal(schedule.companyId, schedule.target.goalId, config);
     if (!goal) {
       throw new ApprovalGateViolationError(
         `HeartbeatSchedule '${schedule.id}' targets goal '${schedule.target.goalId}' which does not exist`,
