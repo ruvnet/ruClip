@@ -17,7 +17,7 @@ import {
   listIssuesForGoal,
   listHeartbeatsForCompany,
 } from '../../src/control-plane/store/agentdb-adapter.js';
-import { buildDashboardSnapshot } from '../../src/control-plane/dashboard/build-snapshot.js';
+import { buildDashboardSnapshot, DASHBOARD_FANOUT_CONCURRENCY } from '../../src/control-plane/dashboard/build-snapshot.js';
 import type { Goal } from '../../src/control-plane/schema/goal.js';
 import type { Issue } from '../../src/control-plane/schema/issue.js';
 import type { Company } from '../../src/control-plane/schema/company.js';
@@ -263,6 +263,67 @@ test('buildDashboardSnapshot assembles Company/Goals/Issues/Heartbeats into one 
 
   assert.ok(snapshot!.publishedAt);
 });
+
+// --- bounded fan-out (Dream Cycle 2026-09-28 performance finding) ---------
+
+test(
+  'buildDashboardSnapshot fans out per-issue agentdb_graph-query calls with bounded concurrency, not an ' +
+    'unbounded Promise.all — getChildIssueIds/getBlockerIssueIds run unconditionally for every issue on every ' +
+    'snapshot rebuild, so an unbounded fan-out opens 2x as many simultaneous bridge connections as the company ' +
+    'has issues',
+  async () => {
+    const ISSUE_COUNT = 40;
+    const ROUND_TRIP_MS = 5;
+    const company = baseCompany();
+    const goal = baseGoal({ id: 'goal-1', ownerId: null });
+    const issues = Array.from({ length: ISSUE_COUNT }, (_, i) =>
+      baseIssue({ id: `issue-${i}`, goalId: 'goal-1', assigneeId: null }),
+    );
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const { config } = mockBridge({
+      'agentdb_hierarchical-recall': (args) => {
+        const query = args.query as string;
+        if (args.tier === 'semantic' && query === 'ruclip:company:co-1') {
+          return { results: [{ key: query, value: JSON.stringify(company) }] };
+        }
+        if (args.tier === 'semantic' && query === 'ruclip:company:co-1 goal') {
+          return { results: [{ value: JSON.stringify(goal) }] };
+        }
+        if (query === 'ruclip:company:co-1:goal:goal-1 issue') {
+          return args.tier === 'working'
+            ? { results: issues.map((issue) => ({ value: JSON.stringify(issue) })) }
+            : { results: [] };
+        }
+        return { results: [] };
+      },
+      'agentdb_graph-query': async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, ROUND_TRIP_MS));
+        inFlight -= 1;
+        return { results: [] };
+      },
+    });
+
+    await buildDashboardSnapshot('co-1', config);
+
+    assert.ok(maxInFlight > 1, `expected genuine concurrency (not serialized), observed max ${maxInFlight}`);
+    // Each concurrently-processed issue itself makes 2 concurrent graph-query
+    // calls (getChildIssueIds/getBlockerIssueIds) — see DASHBOARD_FANOUT_CONCURRENCY's
+    // own doc comment — so the real bound on simultaneous bridge connections
+    // is 2x the issue-level concurrency cap, not a 1:1 item-to-call ratio.
+    const expectedCap = DASHBOARD_FANOUT_CONCURRENCY * 2;
+    assert.ok(
+      maxInFlight <= expectedCap,
+      `expected peak in-flight agentdb_graph-query calls capped at ${expectedCap} (2 x ` +
+        `DASHBOARD_FANOUT_CONCURRENCY=${DASHBOARD_FANOUT_CONCURRENCY}), observed ${maxInFlight} (${ISSUE_COUNT} ` +
+        `issues x 2 graph-query calls each = up to ${ISSUE_COUNT * 2} possible simultaneous calls with an ` +
+        `unbounded fan-out)`,
+    );
+  },
+);
 
 test('buildDashboardSnapshot returns null when the company does not exist', async () => {
   const { config } = mockBridge({ 'agentdb_hierarchical-recall': () => ({ results: [] }) });

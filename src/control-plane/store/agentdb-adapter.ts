@@ -1319,7 +1319,7 @@ const SESSION_COST_FETCH_CONCURRENCY = 25;
  * pool pulling from a shared cursor, not chunk-and-await-each-chunk, so a
  * single slow key never stalls the other `limit - 1` workers).
  */
-async function mapWithConcurrency<T, R>(
+export async function mapWithConcurrency<T, R>(
   items: readonly T[],
   limit: number,
   fn: (item: T) => Promise<R>,

@@ -17,6 +17,7 @@ import {
   getBlockerIssueIds,
   operatingBudgetLevel,
   DEFAULT_OPERATING_BUDGET_THRESHOLDS,
+  mapWithConcurrency,
   type AgentDbAdapterConfig,
   type OperatingBudgetLevel,
 } from '../store/agentdb-adapter.js';
@@ -81,6 +82,21 @@ export interface DashboardCompanySnapshot {
     level: OperatingBudgetLevel;
   };
 }
+
+/**
+ * Upper bound on simultaneously-processed goals/issues when
+ * `buildDashboardSnapshot` fans out over a company's goals and issues (see
+ * `buildGoalSnapshot`/`buildIssueSnapshot` below), via `mapWithConcurrency`.
+ * Each issue's own snapshot then issues 2 `agentdb_graph-query` calls
+ * concurrently (`getChildIssueIds`/`getBlockerIssueIds`, unconditional,
+ * uncached), so peak simultaneous bridge connections is bounded at
+ * roughly `2 * DASHBOARD_FANOUT_CONCURRENCY` — company-size-independent,
+ * vs. an unbounded `Promise.all`'s `2 * issueCount`. Same class of hazard
+ * `checkOperatingBudget`'s `SESSION_COST_FETCH_CONCURRENCY` bound already
+ * fixed on the cost-tracking hot path (Dream Cycle 2026-09-03); this reuses
+ * the same `mapWithConcurrency` helper and the same conservative cap.
+ */
+export const DASHBOARD_FANOUT_CONCURRENCY = 25;
 
 export interface DashboardSnapshot {
   /** ISO 8601 — when this snapshot was assembled, shown on the page so a viewer never mistakes it for live data (§0). */
@@ -161,7 +177,9 @@ async function buildGoalSnapshot(
     resolveOrgMemberRef(companyId, goal.ownerId, cache, config),
     listIssuesForGoal(companyId, goal.id, config),
   ]);
-  const issues = await Promise.all(rawIssues.map((issue) => buildIssueSnapshot(companyId, issue, cache, config)));
+  const issues = await mapWithConcurrency(rawIssues, DASHBOARD_FANOUT_CONCURRENCY, (issue) =>
+    buildIssueSnapshot(companyId, issue, cache, config),
+  );
   return {
     id: goal.id,
     description: goal.description,
@@ -196,7 +214,9 @@ export async function buildDashboardSnapshot(
   const orgMemberCache: OrgMemberCache = new Map();
 
   const [goalSnapshots, heartbeats] = await Promise.all([
-    Promise.all(goals.map((goal) => buildGoalSnapshot(companyId, goal, orgMemberCache, config))),
+    mapWithConcurrency(goals, DASHBOARD_FANOUT_CONCURRENCY, (goal) =>
+      buildGoalSnapshot(companyId, goal, orgMemberCache, config),
+    ),
     Promise.all(
       heartbeatSchedules.map(async (schedule) => ({
         id: schedule.id,
