@@ -28,3 +28,12 @@ jobs:
       # ADR-076's anti-gaming intent (taskHash mismatch -> exit 1).
       - name: metaharness bench suite integrity
         run: npm run harness:bench-verify
+      # Dream Cycle 2026-09-29 (developer-experience): advisory, informational
+      # only — surfaces the dream/* branch backlog (18 unmerged as of
+      # tonight, up from 9 on 2026-09-19) in every future PR's own CI log,
+      # since it's otherwise only discoverable by manually cross-referencing
+      # GitHub issues/PRs. Never a gate: an unrelated PR must never fail
+      # over a backlog it didn't create.
+      - name: dream-cycle branch backlog audit (advisory)
+        run: npm run dream:branch-audit
+        continue-on-error: true
