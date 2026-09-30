@@ -224,12 +224,65 @@ export async function buildDashboardSnapshot(
   // id that genuinely belongs to `companyId` is already known (collected
   // across every goal above), so filter both fields against that set —
   // anything not in it is dropped rather than displayed.
-  const companyIssueIds = new Set(goalSnapshots.flatMap((g) => g.issues.map((i) => i.id)));
-  for (const goal of goalSnapshots) {
-    for (const issue of goal.issues) {
-      issue.childIssueIds = issue.childIssueIds.filter((id) => companyIssueIds.has(id));
-      issue.blockerIssueIds = issue.blockerIssueIds.filter((id) => companyIssueIds.has(id));
-    }
+  const allIssues = goalSnapshots.flatMap((g) => g.issues);
+  const companyIssueIds = new Set(allIssues.map((i) => i.id));
+
+  // Dream Cycle 2026-09-30 correctness fix. Ground truth, read directly from
+  // this repo's own currently-installed dependency (not inferred, not
+  // sourced from an unmerged branch — verified fresh tonight):
+  // `node_modules/@claude-flow/cli/dist/src/mcp-tools/agentdb-tools.js`'s
+  // k-hop handler parses `relation` (line ~1057) but never passes it to
+  // `graphBackend.getNeighbors(nodeId, depth)` (line ~1064) on the native
+  // `graph-node` path — only the unused SQL CTE fallback applies it.
+  // `getNeighbors` (`ruvector/graph-backend.js`) forwards straight to
+  // `db.kHopNeighbors(nodeId, hops)`, whose own type signature
+  // (`@ruvector/graph-node/index.d.ts`) has no relation parameter at all.
+  // Confirmed live by calling the actual installed `@ruvector/graph-node`
+  // module directly: a `parent_of` edge and an unrelated `blocks` edge into
+  // the same node both come back from one k-hop call, and neighbors surface
+  // regardless of edge direction too. PR #37 (issue #36, 2026-09-20 dream
+  // cycle, still open/unmerged as of tonight) found and fixed the same
+  // defect for `childIssueIds`, independently of this candidate.
+  //
+  // `parent_of` and `blocks` are the only two relations ever recorded
+  // between two issue nodes (schema/enums.ts CausalRelation; every other
+  // relation targets a goal/org-member). So any issue-prefixed neighbor
+  // returned for a `blockerIssueIds` lookup that equals the issue's own
+  // parentId or one of its own children (both already known authoritatively
+  // from Issue.parentId, zero extra AgentDB calls) is provably parent_of
+  // noise, not a real blocker, and is excluded below.
+  //
+  // KNOWN RESIDUAL GAPS, not fixed by this candidate (both because the
+  // underlying k-hop call cannot distinguish relations at all, not because
+  // of an oversight here — see
+  // tests/control-plane/dashboard-blocker-same-node-both-relations-gap.test.ts):
+  //   1. An issue this one itself blocks (rather than one that blocks it)
+  //      can still surface in its blockerIssueIds — the backend is
+  //      direction-blind and nothing distinguishes "blocks" from "blocked
+  //      by" without a dedicated field.
+  //   2. If an issue's real blocker is ALSO its own parent or child (a
+  //      `parent_of` edge and a `blocks` edge both exist between the same
+  //      pair — legal per DOMAIN-MODEL.md, which imposes no such
+  //      restriction), this filter cannot tell that neighbor apart from
+  //      pure parent_of noise and will incorrectly drop a genuine blocker.
+  //      Not reachable today: `addBlocksEdge` has zero production call
+  //      sites in this repo (grep-confirmed) — no real `blocks` edge is
+  //      currently created by anything — so this gap is latent, not live.
+  const childIssueIdsByParentId = new Map<string, string[]>();
+  for (const issue of allIssues) {
+    if (issue.parentId === null) continue;
+    const siblings = childIssueIdsByParentId.get(issue.parentId) ?? [];
+    siblings.push(issue.id);
+    childIssueIdsByParentId.set(issue.parentId, siblings);
+  }
+
+  for (const issue of allIssues) {
+    issue.childIssueIds = issue.childIssueIds.filter((id) => companyIssueIds.has(id));
+    const knownParentOfNeighbors = new Set(childIssueIdsByParentId.get(issue.id) ?? []);
+    if (issue.parentId !== null) knownParentOfNeighbors.add(issue.parentId);
+    issue.blockerIssueIds = issue.blockerIssueIds.filter(
+      (id) => companyIssueIds.has(id) && !knownParentOfNeighbors.has(id),
+    );
   }
 
   const utilizationPct = company.budget.total > 0 ? company.budget.spent / company.budget.total : 0;
