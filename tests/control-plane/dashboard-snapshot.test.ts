@@ -16,6 +16,7 @@ import {
   listGoalsForCompany,
   listIssuesForGoal,
   listHeartbeatsForCompany,
+  listApprovalTransitionsForCompany,
 } from '../../src/control-plane/store/agentdb-adapter.js';
 import { buildDashboardSnapshot } from '../../src/control-plane/dashboard/build-snapshot.js';
 import type { Goal } from '../../src/control-plane/schema/goal.js';
@@ -152,6 +153,40 @@ test('listIssuesForGoal scopes to the requested goal across both working and epi
   );
 });
 
+test(
+  'listIssuesForGoal fetches the working/episodic tiers concurrently, not one round trip at a time — Dream Cycle ' +
+    '2026-10-02 performance finding (rotated from architecture): this scan runs every time the dashboard snapshot ' +
+    'is assembled, so two sequential round trips is 2x latency on that path for no reason — the tiers are ' +
+    'independent reads',
+  async () => {
+    const ROUND_TRIP_MS = 25;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const { config } = mockBridge({
+      'agentdb_hierarchical-recall': async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, ROUND_TRIP_MS));
+        inFlight -= 1;
+        return { results: [] };
+      },
+    });
+
+    const start = Date.now();
+    await listIssuesForGoal('co-1', 'goal-1', config);
+    const elapsedMs = Date.now() - start;
+
+    assert.ok(
+      maxInFlight > 1,
+      `expected the working and episodic tier fetches to overlap (proof of concurrency), observed max ${maxInFlight}`,
+    );
+    assert.ok(
+      elapsedMs < 2 * ROUND_TRIP_MS,
+      `expected concurrent tier fetch to beat 2 sequential round trips (${2 * ROUND_TRIP_MS}ms), took ${elapsedMs}ms`,
+    );
+  },
+);
+
 // --- listHeartbeatsForCompany ---------------------------------------------------
 
 test('listHeartbeatsForCompany returns every schedule for the company regardless of status or due-ness, unlike listDueHeartbeats', async () => {
@@ -182,6 +217,68 @@ test('listHeartbeatsForCompany returns every schedule for the company regardless
   assert.equal(pausedResult?.status, 'paused');
   assert.equal(pausedResult?.lastOutcome, 'application_budget_blocked');
 });
+
+test(
+  'listHeartbeatsForCompany fetches the working/episodic tiers concurrently, not one round trip at a time — same ' +
+    'Dream Cycle 2026-10-02 finding as listIssuesForGoal',
+  async () => {
+    const ROUND_TRIP_MS = 25;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const { config } = mockBridge({
+      'agentdb_hierarchical-recall': async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, ROUND_TRIP_MS));
+        inFlight -= 1;
+        return { results: [] };
+      },
+    });
+
+    const start = Date.now();
+    await listHeartbeatsForCompany('co-1', config);
+    const elapsedMs = Date.now() - start;
+
+    assert.ok(maxInFlight > 1, `expected overlapping tier fetches (proof of concurrency), observed max ${maxInFlight}`);
+    assert.ok(
+      elapsedMs < 2 * ROUND_TRIP_MS,
+      `expected concurrent tier fetch to beat 2 sequential round trips (${2 * ROUND_TRIP_MS}ms), took ${elapsedMs}ms`,
+    );
+  },
+);
+
+// --- listApprovalTransitionsForCompany --------------------------------------
+
+test(
+  'listApprovalTransitionsForCompany fetches the working/episodic tiers concurrently, not one round trip at a ' +
+    'time — same Dream Cycle 2026-10-02 finding; this scan feeds recomputeInteractionSignals on every approve/' +
+    'reject decision',
+  async () => {
+    const ROUND_TRIP_MS = 25;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const { config } = mockBridge({
+      'agentdb_hierarchical-recall': async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, ROUND_TRIP_MS));
+        inFlight -= 1;
+        return { results: [] };
+      },
+    });
+
+    const start = Date.now();
+    const result = await listApprovalTransitionsForCompany('co-1', config);
+    const elapsedMs = Date.now() - start;
+
+    assert.deepEqual(result, []);
+    assert.ok(maxInFlight > 1, `expected overlapping tier fetches (proof of concurrency), observed max ${maxInFlight}`);
+    assert.ok(
+      elapsedMs < 2 * ROUND_TRIP_MS,
+      `expected concurrent tier fetch to beat 2 sequential round trips (${2 * ROUND_TRIP_MS}ms), took ${elapsedMs}ms`,
+    );
+  },
+);
 
 // --- buildDashboardSnapshot ----------------------------------------------------
 

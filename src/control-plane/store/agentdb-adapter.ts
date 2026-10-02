@@ -726,6 +726,15 @@ export async function recallIssue(
  * both tiers an Issue can live in (`tierForIssueStatus` — `working` while
  * open/in_progress/blocked, `episodic` once done/cancelled), `topK: 200`
  * per tier, skip malformed entries rather than fail the whole scan.
+ *
+ * Dream Cycle 2026-10-02 (performance/latency, rotated from architecture):
+ * the two tier scans are independent reads of unrelated keys — neither
+ * depends on the other's result — so they now fan out via `Promise.all`
+ * instead of one `await` per loop iteration, same fix class as 09-03's
+ * `checkOperatingBudget`/`mapWithConcurrency` and the merge-order
+ * insensitivity already relied on there: callers either re-sort
+ * (`recomputeInteractionSignals`) or treat the array as an unordered
+ * display list (`buildDashboardSnapshot`).
  */
 export async function listIssuesForGoal(
   companyId: string,
@@ -735,12 +744,16 @@ export async function listIssuesForGoal(
   assertSafeId(companyId, 'companyId');
   assertSafeId(goalId, 'goalId');
   const issues: Issue[] = [];
-  for (const tier of ['working', 'episodic'] as const) {
-    const result = await callTool<{ results?: Array<{ value?: string }> }>(
-      'agentdb_hierarchical-recall',
-      { query: `ruclip:company:${companyId}:goal:${goalId} issue`, tier, topK: 200 },
-      config,
-    );
+  const tierResults = await Promise.all(
+    (['working', 'episodic'] as const).map((tier) =>
+      callTool<{ results?: Array<{ value?: string }> }>(
+        'agentdb_hierarchical-recall',
+        { query: `ruclip:company:${companyId}:goal:${goalId} issue`, tier, topK: 200 },
+        config,
+      ),
+    ),
+  );
+  for (const result of tierResults) {
     for (const r of result.results ?? []) {
       if (typeof r.value !== 'string') continue;
       try {
@@ -790,6 +803,10 @@ export async function recallApprovalTransition(
  * `listDueHeartbeats`'s own documented limitation and
  * EMPLOYEE-INTERACTION-PROFILE.md §6 open item 3's explicit acceptance of
  * this trade-off.
+ *
+ * Dream Cycle 2026-10-02 (performance/latency, rotated from architecture):
+ * same `Promise.all`-across-tiers fix as `listIssuesForGoal`/
+ * `listHeartbeatsForCompany` below — the two tier reads are independent.
  */
 export async function listApprovalTransitionsForCompany(
   companyId: string,
@@ -797,12 +814,16 @@ export async function listApprovalTransitionsForCompany(
 ): Promise<ApprovalTransition[]> {
   assertSafeId(companyId, 'companyId');
   const transitions: ApprovalTransition[] = [];
-  for (const tier of ['working', 'episodic'] as const) {
-    const result = await callTool<{ results?: Array<{ key?: string; value?: string }> }>(
-      'agentdb_hierarchical-recall',
-      { query: companyKey(companyId), tier, topK: 500 },
-      config,
-    );
+  const tierResults = await Promise.all(
+    (['working', 'episodic'] as const).map((tier) =>
+      callTool<{ results?: Array<{ key?: string; value?: string }> }>(
+        'agentdb_hierarchical-recall',
+        { query: companyKey(companyId), tier, topK: 500 },
+        config,
+      ),
+    ),
+  );
+  for (const result of tierResults) {
     for (const r of result.results ?? []) {
       // A similarity query with extra words returned nothing on a real bridge;
       // the bare company prefix returns the company's records, filtered by key.
@@ -1204,6 +1225,11 @@ export async function listDueHeartbeats(companyId: string, config?: AgentDbAdapt
  * while active/paused, `episodic` once cancelled). `listDueHeartbeats`
  * itself is untouched (still used by whatever actually fires heartbeats) —
  * this is a new, separate function, not a refactor of it.
+ *
+ * Dream Cycle 2026-10-02 (performance/latency, rotated from architecture):
+ * same `Promise.all`-across-tiers fix as `listIssuesForGoal`/
+ * `listApprovalTransitionsForCompany` above — the two tier reads are
+ * independent.
  */
 export async function listHeartbeatsForCompany(
   companyId: string,
@@ -1211,12 +1237,16 @@ export async function listHeartbeatsForCompany(
 ): Promise<HeartbeatSchedule[]> {
   assertSafeId(companyId, 'companyId');
   const schedules: HeartbeatSchedule[] = [];
-  for (const tier of ['working', 'episodic'] as const) {
-    const result = await callTool<{ results?: Array<{ value?: string }> }>(
-      'agentdb_hierarchical-recall',
-      { query: `ruclip:company:${companyId} heartbeat`, tier, topK: 100 },
-      config,
-    );
+  const tierResults = await Promise.all(
+    (['working', 'episodic'] as const).map((tier) =>
+      callTool<{ results?: Array<{ value?: string }> }>(
+        'agentdb_hierarchical-recall',
+        { query: `ruclip:company:${companyId} heartbeat`, tier, topK: 100 },
+        config,
+      ),
+    ),
+  );
+  for (const result of tierResults) {
     for (const r of result.results ?? []) {
       if (typeof r.value !== 'string') continue;
       try {
