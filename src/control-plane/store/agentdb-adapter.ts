@@ -1134,7 +1134,29 @@ export async function persistHeartbeatSchedule(
       await deleteFromTier(key, previousTier, config);
     }
   }
-  await recordCausalEdge(entityNodeId('heartbeat', schedule.id), targetNodeId, 'belongs_to', config);
+  // fireHeartbeat re-persists its schedule on every single fire (both the
+  // success path and every pauseAndPersist path), and `target` is never
+  // reassigned once a schedule exists (confirmed: no call site anywhere in
+  // this codebase writes a new `target` onto an existing schedule) — so on
+  // every one of those re-persists this unconditional write recorded the
+  // exact same `belongs_to` edge the schedule already has. The real,
+  // installed `agentdb_causal-edge` tool is not a cheap no-op on a
+  // duplicate: it does a fire-and-forget `graph_edges` SQL write, a dynamic
+  // `graph-backend.js` import + availability probe, and (on the bridge
+  // fallback path) a second write for "compatibility" — real work repeated
+  // forever on the one path in this repo that fires on a recurring cadence.
+  // Skip the write only when this is a re-persist (`stored !== null`) of an
+  // unchanged target; a genesis create, or the target genuinely differing
+  // from what's stored, still always (re)writes the edge.
+  if (stored === null || !heartbeatTargetsEqual(stored.target, schedule.target)) {
+    await recordCausalEdge(entityNodeId('heartbeat', schedule.id), targetNodeId, 'belongs_to', config);
+  }
+}
+
+function heartbeatTargetsEqual(a: HeartbeatTarget, b: HeartbeatTarget): boolean {
+  if (a.kind === 'goal' && b.kind === 'goal') return a.goalId === b.goalId;
+  if (a.kind === 'issue' && b.kind === 'issue') return a.goalId === b.goalId && a.issueId === b.issueId;
+  return false;
 }
 
 export async function recallHeartbeatSchedule(

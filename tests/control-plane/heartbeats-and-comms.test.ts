@@ -290,12 +290,64 @@ test('persistHeartbeatSchedule without an actor (system-firing path) skips the c
   assert.ok(!calls.some((c) => c.toolName === 'claims_list'));
 });
 
+test('persistHeartbeatSchedule skips the redundant belongs_to causal-edge write when re-persisting an existing schedule with an unchanged target — fireHeartbeat makes this exact call on every single fire', async () => {
+  // No 'agentdb_causal-edge' handler registered at all: mockBridge throws
+  // "No mock handler registered" if the call happens, so this test is
+  // discriminating by construction (fails loudly against the unfixed
+  // code, not just a call-count assertion that could silently pass).
+  const existingSchedule = baseSchedule();
+  const scheduleKey = heartbeatKey(existingSchedule.companyId, existingSchedule.target, existingSchedule.id);
+  const issue = baseIssue();
+  const { config } = mockBridge({
+    'agentdb_hierarchical-recall': (args) => {
+      if (args.tier === 'working' && args.query === 'ruclip:company:co-1:goal:goal-1:issue:issue-1') {
+        return { results: [{ key: 'ruclip:company:co-1:goal:goal-1:issue:issue-1', value: JSON.stringify(issue) }] };
+      }
+      if (args.tier === 'working' && args.query === scheduleKey) {
+        return { results: [{ key: scheduleKey, value: JSON.stringify(existingSchedule) }] };
+      }
+      return { results: [] };
+    },
+    'agentdb_hierarchical-store': () => ({ success: true }),
+  });
+  await assert.doesNotReject(() =>
+    persistHeartbeatSchedule(existingSchedule, undefined, existingSchedule.status, config),
+  );
+});
+
+test('persistHeartbeatSchedule still writes the belongs_to causal edge when the recalled target differs from the schedule being persisted', async () => {
+  const previousSchedule = baseSchedule({ target: { kind: 'issue', goalId: 'goal-1', issueId: 'issue-old' } });
+  const retargeted = baseSchedule({ target: { kind: 'issue', goalId: 'goal-1', issueId: 'issue-1' } });
+  const scheduleKey = heartbeatKey(retargeted.companyId, retargeted.target, retargeted.id);
+  const issue = baseIssue();
+  const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': (args) => {
+      if (args.tier === 'working' && args.query === 'ruclip:company:co-1:goal:goal-1:issue:issue-1') {
+        return { results: [{ key: 'ruclip:company:co-1:goal:goal-1:issue:issue-1', value: JSON.stringify(issue) }] };
+      }
+      if (args.tier === 'working' && args.query === scheduleKey) {
+        return { results: [{ key: scheduleKey, value: JSON.stringify(previousSchedule) }] };
+      }
+      return { results: [] };
+    },
+    'agentdb_hierarchical-store': () => ({ success: true }),
+    'agentdb_causal-edge': () => ({ success: true }),
+  });
+  await assert.doesNotReject(() => persistHeartbeatSchedule(retargeted, undefined, retargeted.status, config));
+  assert.ok(calls.some((c) => c.toolName === 'agentdb_causal-edge'));
+});
+
 // --- persistHeartbeatSchedule / recallHeartbeatSchedule: tier migration ------
 
 test('persistHeartbeatSchedule moves working -> episodic on cancel and deletes the stale working copy', async () => {
   const issue = baseIssue();
+  const activeSchedule = baseSchedule({ status: 'active' });
+  const scheduleKey = heartbeatKey(activeSchedule.companyId, activeSchedule.target, activeSchedule.id);
   const { calls, config } = mockBridge({
-    'agentdb_hierarchical-recall': (args) => ({ results: [{ key: args.query, value: JSON.stringify(issue) }] }),
+    'agentdb_hierarchical-recall': (args) => {
+      if (args.query === scheduleKey) return { results: [{ key: scheduleKey, value: JSON.stringify(activeSchedule) }] };
+      return { results: [{ key: args.query, value: JSON.stringify(issue) }] };
+    },
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_hierarchical-delete': () => ({ success: true }),
     'agentdb_causal-edge': () => ({ success: true }),
@@ -486,9 +538,14 @@ test('fireHeartbeat Gate 1 blocks and pauses when an issue-target heartbeat woul
 test('fireHeartbeat Gate 1 is a no-op when the target issue has budgetImpact === 0', async () => {
   const company = baseCompany();
   const issue = baseIssue({ budgetImpact: 0 });
+  const schedule = baseSchedule();
+  const scheduleKey = heartbeatKey(schedule.companyId, schedule.target, schedule.id);
   const { config } = mockBridge({
     'agentdb_hierarchical-recall': (args) => {
       if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1') return { results: [{ key: args.query, value: JSON.stringify(company) }] };
+      if (args.tier === 'working' && args.query === scheduleKey) {
+        return { results: [{ key: scheduleKey, value: JSON.stringify(schedule) }] };
+      }
       if (args.tier === 'working') return { results: [{ key: args.query, value: JSON.stringify(issue) }] };
       return { results: [] };
     },
@@ -496,7 +553,7 @@ test('fireHeartbeat Gate 1 is a no-op when the target issue has budgetImpact ===
     'agentdb_causal-edge': () => ({ success: true }),
     'memory_retrieve': () => ({ found: false }), // Gate 2: no budget configured -> OK
   });
-  const result = await fireHeartbeat(baseSchedule(), {}, config);
+  const result = await fireHeartbeat(schedule, {}, config);
   assert.equal(result.outcome, 'ok');
 });
 
@@ -532,9 +589,17 @@ test('fireHeartbeat Gate 1 for a goal-target heartbeat checks Goal.budgetAllocat
 test('fireHeartbeat Gate 2 blocks and pauses on HARD_STOP even when Gate 1 passes', async () => {
   const company = baseCompany();
   const issue = baseIssue({ budgetImpact: 0 });
+  const schedule = baseSchedule();
+  const scheduleKey = heartbeatKey(schedule.companyId, schedule.target, schedule.id);
   const { config } = mockBridge({
     'agentdb_hierarchical-recall': (args) => {
       if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1') return { results: [{ key: args.query, value: JSON.stringify(company) }] };
+      // persistHeartbeatSchedule's own re-persist recalls this exact key —
+      // must return the schedule itself, not the generic 'working' fallback
+      // below (which would hand back the issue's JSON for this query too).
+      if (args.tier === 'working' && args.query === scheduleKey) {
+        return { results: [{ key: scheduleKey, value: JSON.stringify(schedule) }] };
+      }
       if (args.tier === 'working') return { results: [{ key: args.query, value: JSON.stringify(issue) }] };
       return { results: [] };
     },
@@ -549,7 +614,7 @@ test('fireHeartbeat Gate 2 blocks and pauses on HARD_STOP even when Gate 1 passe
     },
     'memory_list': () => ({ entries: [{ key: 'co-1:session-a' }] }),
   });
-  const result = await fireHeartbeat(baseSchedule(), {}, config);
+  const result = await fireHeartbeat(schedule, {}, config);
   assert.equal(result.outcome, 'operating_budget_blocked');
   assert.equal(result.schedule.status, 'paused');
 });
@@ -560,9 +625,13 @@ test('fireHeartbeat publishes heartbeat-fired and advances nextFireAt by cadence
   const company = baseCompany();
   const issue = baseIssue({ budgetImpact: 0 });
   const schedule = baseSchedule({ cadenceSeconds: 600, nextFireAt: '2020-01-01T00:00:00.000Z' });
+  const scheduleKey = heartbeatKey(schedule.companyId, schedule.target, schedule.id);
   const { config } = mockBridge({
     'agentdb_hierarchical-recall': (args) => {
       if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1') return { results: [{ key: args.query, value: JSON.stringify(company) }] };
+      if (args.tier === 'working' && args.query === scheduleKey) {
+        return { results: [{ key: scheduleKey, value: JSON.stringify(schedule) }] };
+      }
       if (args.tier === 'working') return { results: [{ key: args.query, value: JSON.stringify(issue) }] };
       return { results: [] };
     },
@@ -590,9 +659,14 @@ test('fireHeartbeat publishes heartbeat-fired and advances nextFireAt by cadence
 test('fireHeartbeat never throws or blocks the domain write when the notifications channel is degraded/rejects', async () => {
   const company = baseCompany();
   const issue = baseIssue({ budgetImpact: 0 });
+  const schedule = baseSchedule();
+  const scheduleKey = heartbeatKey(schedule.companyId, schedule.target, schedule.id);
   const { config } = mockBridge({
     'agentdb_hierarchical-recall': (args) => {
       if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1') return { results: [{ key: args.query, value: JSON.stringify(company) }] };
+      if (args.tier === 'working' && args.query === scheduleKey) {
+        return { results: [{ key: scheduleKey, value: JSON.stringify(schedule) }] };
+      }
       if (args.tier === 'working') return { results: [{ key: args.query, value: JSON.stringify(issue) }] };
       return { results: [] };
     },
@@ -605,7 +679,7 @@ test('fireHeartbeat never throws or blocks the domain write when the notificatio
       throw new Error('comms backend unavailable');
     },
   };
-  const result = await fireHeartbeat(baseSchedule(), { notifications: throwingChannel }, config);
+  const result = await fireHeartbeat(schedule, { notifications: throwingChannel }, config);
   assert.equal(result.outcome, 'ok'); // the domain write still succeeded despite the notification failure
 });
 
