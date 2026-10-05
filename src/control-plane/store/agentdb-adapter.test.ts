@@ -193,6 +193,45 @@ test('recordCausalEdge refuses a self-referential parent_of edge without calling
   assert.equal(calls.length, 0);
 });
 
+test('GAP (known, not fixed here — see wouldCreateCycle header): a relation-blind k-hop backend false-positives a cycle between two Issues connected only via an unrelated belongs_to path', async () => {
+  // Models the real agentdb_graph-query graph-node-native backend exactly as
+  // confirmed against this repo's own installed node_modules (see
+  // wouldCreateCycle's header comment): its kHopNeighbors(nodeId, k) API has
+  // no relation parameter at all, so it returns a reachable node regardless
+  // of which relation the caller actually asked to filter by — this
+  // handler, like the sibling 'refuses a reports_to edge that would close a
+  // cycle' test above, ignores `args.relation` entirely on purpose.
+  // wouldCreateCycle queries from the proposed TARGET (sibling-b) and checks
+  // whether the proposed SOURCE (sibling-a) comes back as "reachable" — so
+  // the mock returns sibling-a's own node id, modeling "sibling-a is
+  // k-hop-reachable from sibling-b" via two unrelated belongs_to edges to
+  // the same Goal (never via any parent_of/reports_to edge — a relation-exact
+  // backend would find no path and return no results here at all).
+  // agentdb_causal-edge is mocked to succeed (not omitted) so that a
+  // relation-aware wouldCreateCycle — which WOULD let this edge through —
+  // is distinguishable from a mock-bridge artifact: without this handler,
+  // ANY outcome short of a real cycle-rejection throws anyway (no handler
+  // registered), which would make this test pass vacuously regardless of
+  // wouldCreateCycle's own correctness. Same discriminating-power lesson
+  // PR #27 (2026-09-15 dream-cycle) already established for the sibling
+  // true-cycle test above.
+  const { calls, config } = mockBridge({
+    'agentdb_graph-query': () => ({ results: [{ nodeId: 'entity:issue:sibling-a' }] }),
+    'agentdb_causal-edge': () => ({ success: true }),
+  });
+  // Correct, relation-exact behavior would find no parent_of path between
+  // true siblings and allow this edge (reaching agentdb_causal-edge). The
+  // real backend can't filter by relation, so today this is refused before
+  // ever reaching it — a false positive, not a genuine cycle. This test
+  // pins that real, current behavior; it is not asserting the edge SHOULD
+  // be refused.
+  await assert.rejects(
+    () => recordCausalEdge('entity:issue:sibling-a', 'entity:issue:sibling-b', 'parent_of', config),
+    AgentDbBridgeError,
+  );
+  assert.deepEqual(calls.map((c) => c.toolName), ['agentdb_graph-query']);
+});
+
 test('recallCompany filters hierarchical-recall results to an exact key match', async () => {
   const stored: Company = {
     id: 'co-1',

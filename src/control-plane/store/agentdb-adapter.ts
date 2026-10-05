@@ -295,6 +295,37 @@ const CYCLE_CHECKED_RELATIONS: readonly CausalRelation[] = ['parent_of', 'report
  * that was never checked against the real tool's actual contract. Fixed
  * here by reading the real `results`/`nodeId` shape; every test mocking
  * `agentdb_graph-query` is corrected to match in the same change.
+ *
+ * KNOWN GAP, confirmed but NOT fixed here (Dream Cycle 2026-10-05 —
+ * correctness): the real `agentdb_graph-query` tool's graph-node-native
+ * backend (`@ruvector/graph-node`, confirmed present in this repo's own
+ * `node_modules`) is both relation-blind and direction-blind — already
+ * confirmed live, independently, for the read-only
+ * `getChildIssueIds`/`getBlockerIssueIds` dashboard-display path (2026-09-30
+ * dream-cycle night, unmerged PR #49). Re-confirmed here from
+ * `node_modules/@ruvector/graph-node/index.d.ts`'s own NAPI signature —
+ * `kHopNeighbors(startNode: string, k: number): Promise<Array<string>>` has
+ * no `relation` parameter at all, and
+ * `node_modules/@claude-flow/cli/dist/src/ruvector/graph-backend.js`'s
+ * `getNeighbors`/`recordCausalEdge` confirm relation is stored (as the
+ * edge's `label`) but never surfaced back out by `kHopNeighbors`'s
+ * node-id-only return shape — there is no way for any caller, including
+ * this one, to recover it after the fact.
+ *
+ * This function is a MORE SEVERE consumer of that same defect than the
+ * dashboard fields: it gates real `parent_of`/`reports_to` edge *writes*
+ * (DOMAIN-MODEL.md §1.2/§1.4), not a display-only read. Consequence: two
+ * nodes already connected by ANY edge of ANY relation within `depth` hops
+ * (e.g. two sibling Issues under the same Goal, connected only via two
+ * unrelated `belongs_to` edges) are wrongly reported as "would close a
+ * cycle" and the edge is refused — a false positive, not a genuine cycle.
+ * Pinned by a dedicated gap test (`agentdb-adapter.test.ts`) rather than
+ * left silent. A true fix needs ruClip to stop delegating relation-exact
+ * cycle detection to this tool — e.g. its own per-relation adjacency index
+ * via `memory_store`/`memory_retrieve` — which is a write-path behavior
+ * change too large for a single tiny/reviewable candidate; flagged as next
+ * steps in `docs/dream-cycle/2026-10-05-correctness-report.md`, not
+ * attempted here.
  */
 async function wouldCreateCycle(
   candidateSourceId: string,
