@@ -56,3 +56,38 @@ test('resolveAttesterPublicKeyDerHex throws when neither privateKeyPem nor secre
     if (previousProject !== undefined) process.env.RUCLIP_ATTESTER_SIGNING_PROJECT = previousProject;
   }
 });
+
+// Dream Cycle 2026-10-06 (security): identity-map.ts (CACHE_TTL_MS) and
+// google-token.ts (PUBLIC_KEY_CACHE_TTL_MS) both cache their Secret Manager
+// read with a short TTL — documented in each file's own header as closing an
+// "every request hits GCP" availability/latency gap. signing-key.ts, reading
+// a secret of the exact same sensitivity from the exact same Secret Manager
+// API, was missed: it re-fetched on every single mint. This directly
+// reproduces a real fake Secret Manager backend (counting calls, no network)
+// rather than inferring the call count from source reading.
+test('mintHumanIdentityAttestation reuses the Secret Manager read across calls within the cache TTL (matches identity-map.ts/google-token.ts)', async () => {
+  const { config } = mockBridge({ ...nonceMockHandlers() });
+  let accessCount = 0;
+  const fakeSecretManagerClient = {
+    accessSecretVersion: async () => {
+      accessCount += 1;
+      return [{ payload: { data: Buffer.from(TEST_PRIVATE_KEY_PEM) } }, undefined, undefined] as [
+        { payload: { data: Buffer } },
+        undefined,
+        undefined,
+      ];
+    },
+  };
+  const signingConfig = {
+    secretName: 'dream-cycle-test-signing-secret',
+    secretProject: 'dream-cycle-test-project',
+    secretManagerClient: fakeSecretManagerClient,
+  };
+
+  const first = await mintHumanIdentityAttestation('om-1', 'co-1', 'google:cache-test@ruv.net', 15 * 60, signingConfig);
+  const second = await mintHumanIdentityAttestation('om-2', 'co-2', 'google:cache-test-2@ruv.net', 15 * 60, signingConfig);
+
+  assert.equal(first.attesterPublicKeyDerHex, second.attesterPublicKeyDerHex);
+  assert.equal(accessCount, 1, `expected the cached keypair to be reused (1 Secret Manager read), got ${accessCount}`);
+  void config;
+});

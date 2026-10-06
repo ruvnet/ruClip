@@ -40,6 +40,11 @@ function getSecretManagerClient(): SecretManagerServiceClient {
 
 const DEFAULT_TTL_SECONDS = 15 * 60; // matches HumanIdentityAttestation's own default (HUMAN-CREDENTIAL-ISSUANCE.md)
 
+/** The one shape this module actually reads off a Secret Manager client's `accessSecretVersion` response — narrow enough for tests to fake without the full GCP client surface. */
+interface SecretVersionReader {
+  accessSecretVersion(request: { name: string }): Promise<[{ payload?: { data?: Uint8Array | string | null } | null }, ...unknown[]]>;
+}
+
 export interface AttesterSigningKeyConfig {
   /** Test/dev-only escape hatch — a PKCS8 PEM Ed25519 private key, bypassing the GCP Secret Manager client entirely. Never logged. */
   privateKeyPem?: string;
@@ -47,6 +52,8 @@ export interface AttesterSigningKeyConfig {
   secretName?: string;
   /** Overrides RUCLIP_ATTESTER_SIGNING_PROJECT. */
   secretProject?: string;
+  /** Test-only escape hatch — a fake Secret Manager client, bypassing the real GCP SDK while still exercising the resolve/cache path below. */
+  secretManagerClient?: SecretVersionReader;
 }
 
 async function resolvePrivateKeyPem(config?: AttesterSigningKeyConfig): Promise<string> {
@@ -62,7 +69,8 @@ async function resolvePrivateKeyPem(config?: AttesterSigningKeyConfig): Promise<
     );
   }
   try {
-    const [response] = await getSecretManagerClient().accessSecretVersion({
+    const client = config?.secretManagerClient ?? getSecretManagerClient();
+    const [response] = await client.accessSecretVersion({
       name: `projects/${secretProject}/secrets/${secretName}/versions/latest`,
     });
     const data = response.payload?.data;
@@ -85,8 +93,7 @@ interface AttesterKeypair {
   publicKeyDerHex: string;
 }
 
-async function loadAttesterKeypair(config?: AttesterSigningKeyConfig): Promise<AttesterKeypair> {
-  const pem = await resolvePrivateKeyPem(config);
+function deriveKeypair(pem: string): AttesterKeypair {
   let privateKey: KeyObject;
   try {
     privateKey = createPrivateKey(pem);
@@ -97,6 +104,31 @@ async function loadAttesterKeypair(config?: AttesterSigningKeyConfig): Promise<A
   }
   const publicKeyDerHex = createPublicKey(privateKey).export({ type: 'spki', format: 'der' }).toString('hex');
   return { privateKey, publicKeyDerHex };
+}
+
+// Dream Cycle 2026-10-06 (security): identity-map.ts's CACHE_TTL_MS and
+// google-token.ts's PUBLIC_KEY_CACHE_TTL_MS both close this exact gap for
+// their own Secret Manager / IAP-key reads — see either file's header for
+// the full "every request hits GCP" availability/latency rationale. This
+// read is the same sensitivity, same API, same per-request call site; it
+// was missed when those two were fixed.
+const ATTESTER_KEYPAIR_CACHE_TTL_MS = 60_000;
+let keypairCache: { value: AttesterKeypair; fetchedAt: number } | null = null;
+
+async function loadAttesterKeypair(config?: AttesterSigningKeyConfig): Promise<AttesterKeypair> {
+  // The test/dev privateKeyPem override always re-derives fresh so tests
+  // observe the exact fixture they passed, never a stale cached one from a
+  // previous test — same convention as identity-map.ts's mapJson override.
+  if (config?.privateKeyPem !== undefined) {
+    return deriveKeypair(config.privateKeyPem);
+  }
+  if (keypairCache && Date.now() - keypairCache.fetchedAt < ATTESTER_KEYPAIR_CACHE_TTL_MS) {
+    return keypairCache.value;
+  }
+  const pem = await resolvePrivateKeyPem(config);
+  const value = deriveKeypair(pem);
+  keypairCache = { value, fetchedAt: Date.now() };
+  return value;
 }
 
 interface RadioMoeCanonicalModule {
