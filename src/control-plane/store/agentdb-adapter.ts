@@ -686,6 +686,19 @@ export async function persistIssue(
       await deleteFromTier(key, previousTier, config);
     }
   }
+  // Dream Cycle 2026-10-08 (performance): these 3 edge writes look like the
+  // same "independent, so parallelize via Promise.all" shape this repo has
+  // fixed for *reads* at several other call sites (#41, #43, #53) — but they
+  // are not independent here. The sequential `await`s are fail-fast by
+  // design: if the `parent_of` write below rejects (cycle detected), the
+  // `assigned_to` write must never be attempted, so the issue is never left
+  // half-linked into the causal graph. Measured directly: naively replacing
+  // this with `Promise.all([...])` makes the `assigned_to` edge land anyway
+  // even when `parent_of` is rejected for closing a cycle — a real data-
+  // integrity regression, caught by the existing test "persistIssue refuses
+  // a parent_of edge that would close a genuine (non-self) cycle, and never
+  // writes the assigned_to edge that would have followed"
+  // (tests/control-plane/agentdb-adapter.test.ts). Do not parallelize these.
   await recordCausalEdge(entityNodeId('issue', issue.id), entityNodeId('goal', issue.goalId), 'belongs_to', config);
   if (issue.parentId) {
     await recordCausalEdge(
