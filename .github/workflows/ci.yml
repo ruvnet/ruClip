@@ -14,7 +14,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm install --no-audit --no-fund || true
+      # `|| true` was previously swallowing a failed install (registry
+      # outage, lockfile/engine drift): the job then ran build/test against
+      # a missing or partial node_modules, so a red CI run got blamed on
+      # whichever of those tripped over it first instead of on the real
+      # root cause (docs/dream-cycle/2026-10-09-developer-experience-report.md).
+      - run: npm install --no-audit --no-fund
       - run: npm run build
       - run: npm test
       # ruclip-metaharness (docs/design/RUCLIP-METAHARNESS.md §5): advisory
