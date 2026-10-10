@@ -233,6 +233,101 @@ test('persistIssue refuses a parent_of edge that would close a genuine (non-self
   ]);
 });
 
+// --- wouldCreateCycle vs. the real tool's server-side depth clamp ----------
+
+/**
+ * Simulates the real, installed `agentdb_graph-query` tool's actual k-hop
+ * depth clamp (`node_modules/@claude-flow/cli/dist/src/mcp-tools/agentdb-
+ * tools.js`, `agentdbGraphQuery.handler`): `budget.maxDepth = complexity
+ * Budget?.maxDepth ?? 5`, then the effective depth is
+ * `Math.min(requestedDepth ?? 2, budget.maxDepth)` — a caller's `depth`
+ * above the server's own budget is silently ignored unless
+ * `complexityBudget.maxDepth` is also raised. This is the exact mechanism
+ * the 2026-09-05 dream-cycle night (issue #12) read from the real tool
+ * source and flagged as still-open follow-up work (`wouldCreateCycle`'s
+ * hardcoded `depth: 5` alone can never see past 5 hops against the real
+ * bridge, no matter how large `depth` is set, because `complexityBudget`
+ * was never sent).
+ */
+function graphQueryDepthClampHandler(chain: Record<string, string>) {
+  return (args: Record<string, unknown>) => {
+    const requestedDepth = typeof args.depth === 'number' ? args.depth : 2;
+    const budget = args.complexityBudget as { maxDepth?: number } | undefined;
+    const maxDepth = typeof budget?.maxDepth === 'number' ? budget.maxDepth : 5;
+    const effectiveDepth = Math.min(requestedDepth, maxDepth);
+    const results: Array<{ nodeId: string }> = [];
+    let current = args.nodeId as string;
+    for (let hop = 0; hop < effectiveDepth; hop++) {
+      const next = chain[current];
+      if (!next) break;
+      results.push({ nodeId: next });
+      current = next;
+    }
+    return { results };
+  };
+}
+
+// n0 -> n1 -> ... -> n8: an 8-hop parent_of chain already recorded in the
+// graph (8 prior persistIssue/persistOrgMember-style writes, not re-created
+// here — only the resulting graph shape matters to wouldCreateCycle).
+const EIGHT_HOP_CHAIN: Record<string, string> = Object.fromEntries(
+  Array.from({ length: 8 }, (_, i) => [`entity:issue:n${i}`, `entity:issue:n${i + 1}`]),
+);
+
+test('wouldCreateCycle misses an 8-hop cycle when the real tool server-clamps depth to its default of 5 (no complexityBudget sent)', async () => {
+  // Reproduces the baseline bug directly: calling agentdb_graph-query with
+  // only `depth`, no `complexityBudget`, against a mock that enforces the
+  // real tool's own default maxDepth=5 clamp. n8 is 8 hops from n0, beyond
+  // that clamp, so the cycle must go undetected and the edge write must
+  // proceed (wrongly) rather than reject.
+  const { config } = mockBridge({
+    'agentdb_graph-query': (args) => {
+      // depth alone, uncapped by complexityBudget, still clamps to 5 —
+      // the real server ignores depth above its own default budget.
+      const effectiveDepth = Math.min(typeof args.depth === 'number' ? args.depth : 2, 5);
+      const results: Array<{ nodeId: string }> = [];
+      let current = args.nodeId as string;
+      for (let hop = 0; hop < effectiveDepth; hop++) {
+        const next = EIGHT_HOP_CHAIN[current];
+        if (!next) break;
+        results.push({ nodeId: next });
+        current = next;
+      }
+      return { results };
+    },
+    'agentdb_causal-edge': () => ({ success: true }),
+  });
+  // Would close an 8-hop cycle (n8 -> n0 -> n1 -> ... -> n8), but a 5-hop
+  // clamp can never see n8 from n0 — demonstrates the gap, not the fix.
+  await assert.doesNotReject(() => recordCausalEdge('entity:issue:n8', 'entity:issue:n0', 'parent_of', config));
+});
+
+test('wouldCreateCycle detects an 8-hop cycle once complexityBudget.maxDepth is sent (the actual fix: depth alone is not enough)', async () => {
+  const { config } = mockBridge({
+    'agentdb_graph-query': graphQueryDepthClampHandler(EIGHT_HOP_CHAIN),
+    // Registered so that, against the unfixed baseline (cycle undetected),
+    // this test fails on a genuine missing `assert.rejects` rather than on
+    // an incidental "no mock handler for agentdb_causal-edge" throw — the
+    // exact wrong-reason-pass trap issue #12 flagged in a different test.
+    'agentdb_causal-edge': () => ({ success: true }),
+  });
+  await assert.rejects(
+    () => recordCausalEdge('entity:issue:n8', 'entity:issue:n0', 'parent_of', config),
+    AgentDbBridgeError,
+  );
+});
+
+test('wouldCreateCycle still correctly ignores a non-cycle beyond its search depth', async () => {
+  // n9 was never linked into the chain at all — not a cycle at any depth.
+  const { config } = mockBridge({
+    'agentdb_graph-query': graphQueryDepthClampHandler(EIGHT_HOP_CHAIN),
+    'agentdb_causal-edge': () => ({ success: true }),
+  });
+  await assert.doesNotReject(() =>
+    recordCausalEdge('entity:issue:n9', 'entity:issue:n0', 'parent_of', config),
+  );
+});
+
 test('recallIssue falls back to the episodic tier when the working tier has no match', async () => {
   const closedIssue = baseIssue({ status: 'done', closedAt: now });
   let recallCallCount = 0;

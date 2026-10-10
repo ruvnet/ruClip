@@ -270,13 +270,31 @@ async function recallByKey<T>(
 const CYCLE_CHECKED_RELATIONS: readonly CausalRelation[] = ['parent_of', 'reports_to'];
 
 /**
+ * How far `wouldCreateCycle` asks the real `agentdb_graph-query` tool to
+ * search. Must be paired with an explicit `complexityBudget.maxDepth` (see
+ * below) — passing `depth` alone is not sufficient.
+ *
+ * Ground truth (`node_modules/@claude-flow/cli/dist/src/mcp-tools/agentdb-
+ * tools.js`, `agentdbGraphQuery.handler`): `budget.maxDepth = complexity
+ * Budget?.maxDepth ?? 5`, then `depth = Math.min(requestedDepth, budget.
+ * maxDepth)`. A caller that sends `depth: 20` without `complexityBudget`
+ * still gets clamped to the server's default `maxDepth` of 5 — the server
+ * ignores `depth` above its own budget regardless of what the caller asks
+ * for. This was tried as 2026-09-05's hypothesis H1 (widen `depth` alone,
+ * issue #12) and independently REJECTED by that night's own critic for
+ * exactly this reason. Only `complexityBudget.maxDepth` actually raises the
+ * server-side cap; this is that follow-up, not a retry of H1.
+ */
+const CYCLE_CHECK_MAX_DEPTH = 20;
+
+/**
  * Deterministic k-hop reachability check (see file header for why this
  * replaces the domain model's graph-pathfinder suggestion). Returns true if
  * `candidateSourceId` is reachable from `candidateTargetId` by following
  * `relation` edges — i.e. adding `candidateSourceId -> candidateTargetId`
  * would close a cycle.
  *
- * Ground-truth correction (found tonight by reading the real, currently-
+ * Ground-truth correction (found 2026-09-05 by reading the real, currently-
  * pinned tool implementation directly —
  * `node_modules/@claude-flow/cli/dist/src/mcp-tools/agentdb-tools.js`,
  * `agentdbGraphQuery.handler`'s k-hop branch — rather than trusting this
@@ -286,15 +304,22 @@ const CYCLE_CHECKED_RELATIONS: readonly CausalRelation[] = ['parent_of', 'report
  * version this repo already cites elsewhere (`ruflo@3.38.20`) and has
  * installed in its own `node_modules` — not a version-drift guess. Reading
  * `result.nodes` against that real tool always resolves to `undefined` ->
- * `[]`, so `wouldCreateCycle` has silently never rejected any edge and
+ * `[]`, so `wouldCreateCycle` had silently never rejected any edge and
  * `graphNeighbors` below (feeding `getChildIssueIds`/`getBlockerIssueIds`)
- * has always returned an empty array — this whole k-hop path has been dead
+ * had always returned an empty array — this whole k-hop path was dead
  * against the real bridge since it was written. Every existing test still
  * passed because `tests/support/mock-bridge.ts`'s handlers were written to
  * return that same wrong `{nodes: [{id}]}` shape — a self-consistent mock
- * that was never checked against the real tool's actual contract. Fixed
- * here by reading the real `results`/`nodeId` shape; every test mocking
- * `agentdb_graph-query` is corrected to match in the same change.
+ * that was never checked against the real tool's actual contract. Fixed by
+ * reading the real `results`/`nodeId` shape; every test mocking
+ * `agentdb_graph-query` was corrected to match in the same change.
+ *
+ * Known residual limitation (real-tool-side, not fixable from this repo):
+ * the SQL-CTE fallback branch of `agentdb_graph-query` (used when the
+ * graph-node-native backend is unavailable) separately hard-caps k-hop
+ * depth at 3 regardless of `complexityBudget.maxDepth` — a cycle beyond 3
+ * hops can still slip through on that backend. Only the graph-node-native
+ * backend honors `complexityBudget.maxDepth` beyond its own default of 5.
  */
 async function wouldCreateCycle(
   candidateSourceId: string,
@@ -304,7 +329,13 @@ async function wouldCreateCycle(
 ): Promise<boolean> {
   const result = await callTool<{ results?: Array<{ nodeId: string }> }>(
     'agentdb_graph-query',
-    { nodeId: candidateTargetId, mode: 'k-hop', relation, depth: 5 },
+    {
+      nodeId: candidateTargetId,
+      mode: 'k-hop',
+      relation,
+      depth: CYCLE_CHECK_MAX_DEPTH,
+      complexityBudget: { maxDepth: CYCLE_CHECK_MAX_DEPTH },
+    },
     config,
   );
   return (result.results ?? []).some((n) => n.nodeId === candidateSourceId);
