@@ -107,22 +107,52 @@ function checkOperatingBudgetMocks() {
       }
       return { found: false };
     },
-    'memory_list': () => ({ entries: [{ key: 'co-1:session-a' }] }),
+    'memory_list': (args: Record<string, unknown>) =>
+      args.namespace === 'ruclip-cost-tracking' ? { entries: [{ key: 'co-1:session-a' }] } : { entries: [] },
   };
 }
 
+/**
+ * In-memory backing for the level-history + mutation-record namespaces.
+ * `memory_list` returns every stored key (with a synthetic,
+ * strictly-increasing `storedAt`) in the queried namespace — matching the
+ * real backend's own metadata-only shape that `readLevelHistory`
+ * (propose-budget-mutation.ts) sorts by (Dream Cycle 2026-10-11).
+ */
 function statefulNamespaceStore() {
-  const store = new Map<string, unknown>();
+  const store = new Map<string, { namespace: string; value: unknown; storedAt: string }>();
+  let sequence = 0;
   return {
     memory_retrieve: (args: Record<string, unknown>) => {
       const key = `${args.namespace}:${args.key}`;
-      return store.has(key) ? { found: true, value: store.get(key) } : { found: false };
+      const entry = store.get(key);
+      return entry ? { found: true, value: entry.value } : { found: false };
     },
     memory_store: (args: Record<string, unknown>) => {
-      store.set(`${args.namespace}:${args.key}`, JSON.parse(args.value as string));
+      const key = `${args.namespace}:${args.key}`;
+      if (args.upsert === false && store.has(key)) {
+        return { success: false, error: 'UNIQUE constraint failed: memory_entries.namespace, memory_entries.key' };
+      }
+      sequence += 1;
+      store.set(key, {
+        namespace: args.namespace as string,
+        value: JSON.parse(args.value as string),
+        storedAt: new Date(sequence).toISOString(),
+      });
       return { success: true };
     },
+    memory_list: (args: Record<string, unknown>) => ({
+      entries: [...store.entries()]
+        .filter(([, entry]) => entry.namespace === args.namespace)
+        .map(([key, entry]) => ({ key: key.slice((args.namespace as string).length + 1), storedAt: entry.storedAt })),
+    }),
   };
+}
+
+/** Dispatches memory_list by namespace — mirrors the memory_retrieve/memory_store dispatch every test below already does. */
+function dispatchedMemoryList(namespaceStore: ReturnType<typeof statefulNamespaceStore>) {
+  return (args: Record<string, unknown>) =>
+    args.namespace === 'ruclip-cost-tracking' ? checkOperatingBudgetMocks().memory_list(args) : namespaceStore.memory_list(args);
 }
 
 test(
@@ -137,7 +167,7 @@ test(
         return namespaceStore.memory_retrieve(args);
       },
       memory_store: (args) => namespaceStore.memory_store(args),
-      memory_list: checkOperatingBudgetMocks().memory_list,
+      memory_list: dispatchedMemoryList(namespaceStore),
       'agentdb_hierarchical-store': () => ({ success: true }),
     });
     const { calls: autogenousCalls, config: autogenousConfig } = mockAutogenousService({
@@ -190,7 +220,7 @@ test(
         return namespaceStore.memory_retrieve(args);
       },
       memory_store: (args) => namespaceStore.memory_store(args),
-      memory_list: () => ({ entries: [{ key: 'co-1:session-a' }] }),
+      memory_list: dispatchedMemoryList(namespaceStore),
       'agentdb_hierarchical-store': () => ({ success: true }),
     });
     const { calls: autogenousCalls, config: autogenousConfig } = mockAutogenousService({

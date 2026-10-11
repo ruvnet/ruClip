@@ -32,6 +32,7 @@ import {
 import {
   checkAndProposeBudgetMutation,
   observeBudgetMutation,
+  recordLevelObservation,
 } from '../../src/control-plane/governance/propose-budget-mutation.js';
 
 // --- Plain-fetch mock for autogenous-service (REST, not JSON-RPC) ----------
@@ -339,29 +340,59 @@ function checkOperatingBudgetMocks(level: 'OK' | 'WARNING') {
       }
       return { found: false };
     },
-    'memory_list': () => ({ entries: [{ key: 'co-1:session-a' }] }),
+    'memory_list': (args: Record<string, unknown>) =>
+      args.namespace === 'ruclip-cost-tracking' ? { entries: [{ key: 'co-1:session-a' }] } : { entries: [] },
   };
 }
 
-/** In-memory backing for the level-history + mutation-record namespaces, so repeated calls within one test see each other's writes — mirrors actor-credential-fixture.ts's nonceMockHandlers() pattern. */
+/**
+ * In-memory backing for the level-history + mutation-record namespaces, so
+ * repeated calls within one test see each other's writes — mirrors
+ * actor-credential-fixture.ts's nonceMockHandlers() pattern. `memory_list`
+ * returns every stored key (with a synthetic, strictly-increasing
+ * `storedAt`) in the queried namespace, matching the real backend's own
+ * metadata-only shape that `readLevelHistory` (propose-budget-mutation.ts)
+ * sorts by.
+ */
 function statefulNamespaceStore() {
-  const store = new Map<string, unknown>();
+  const store = new Map<string, { namespace: string; value: unknown; storedAt: string }>();
+  let sequence = 0;
   return {
     memory_retrieve: (args: Record<string, unknown>) => {
       const key = `${args.namespace}:${args.key}`;
-      return store.has(key) ? { found: true, value: store.get(key) } : { found: false };
+      const entry = store.get(key);
+      return entry ? { found: true, value: entry.value } : { found: false };
     },
     memory_store: (args: Record<string, unknown>) => {
-      store.set(`${args.namespace}:${args.key}`, JSON.parse(args.value as string));
+      const key = `${args.namespace}:${args.key}`;
+      if (args.upsert === false && store.has(key)) {
+        return { success: false, error: 'UNIQUE constraint failed: memory_entries.namespace, memory_entries.key' };
+      }
+      sequence += 1;
+      store.set(key, {
+        namespace: args.namespace as string,
+        value: JSON.parse(args.value as string),
+        storedAt: new Date(sequence).toISOString(),
+      });
       return { success: true };
     },
+    memory_list: (args: Record<string, unknown>) => ({
+      entries: [...store.entries()]
+        .filter(([, entry]) => entry.namespace === args.namespace)
+        .map(([key, entry]) => ({ key: key.slice((args.namespace as string).length + 1), storedAt: entry.storedAt })),
+    }),
   };
+}
+
+/** Dispatches memory_list by namespace — mirrors the memory_retrieve/memory_store dispatch every test below already does. */
+function dispatchedMemoryList(namespaceStore: ReturnType<typeof statefulNamespaceStore>) {
+  return (args: Record<string, unknown>) =>
+    args.namespace === 'ruclip-cost-tracking' ? checkOperatingBudgetMocks('WARNING').memory_list(args) : namespaceStore.memory_list(args);
 }
 
 test('checkAndProposeBudgetMutation does not trigger before 3 consecutive WARNING-or-worse readings', async () => {
   const namespaceStore = statefulNamespaceStore();
   const { config } = mockBridge({
-    ...checkOperatingBudgetMocks('WARNING'),
     memory_retrieve: (args) => {
       // Route budget-config/session lookups to the stateless helper, and
       // the level-history key to the stateful store.
@@ -369,6 +400,7 @@ test('checkAndProposeBudgetMutation does not trigger before 3 consecutive WARNIN
       return namespaceStore.memory_retrieve(args);
     },
     memory_store: (args) => namespaceStore.memory_store(args),
+    memory_list: dispatchedMemoryList(namespaceStore),
   });
 
   const first = await checkAndProposeBudgetMutation('co-1', 1.0, config);
@@ -386,7 +418,7 @@ test('checkAndProposeBudgetMutation triggers on the 3rd consecutive WARNING-or-w
       return namespaceStore.memory_retrieve(args);
     },
     memory_store: (args) => namespaceStore.memory_store(args),
-    memory_list: checkOperatingBudgetMocks('WARNING').memory_list,
+    memory_list: dispatchedMemoryList(namespaceStore),
     'agentdb_hierarchical-store': (args) => {
       storeCalls.push({ toolName: 'agentdb_hierarchical-store', args });
       return { success: true };
@@ -424,7 +456,7 @@ test('checkAndProposeBudgetMutation persists the record even when the mutation i
       return namespaceStore.memory_retrieve(args);
     },
     memory_store: (args) => namespaceStore.memory_store(args),
-    memory_list: checkOperatingBudgetMocks('WARNING').memory_list,
+    memory_list: dispatchedMemoryList(namespaceStore),
     'agentdb_hierarchical-store': () => ({ success: true }),
   });
   const { config: autogenousConfig } = mockAutogenousService({
@@ -449,7 +481,7 @@ test('checkAndProposeBudgetMutation propagates AutogenousClientError (unreachabl
       return namespaceStore.memory_retrieve(args);
     },
     memory_store: (args) => namespaceStore.memory_store(args),
-    memory_list: checkOperatingBudgetMocks('WARNING').memory_list,
+    memory_list: dispatchedMemoryList(namespaceStore),
     'agentdb_hierarchical-store': () => ({ success: true }),
   });
   const unreachableAutogenousConfig: AutogenousClientConfig = {
@@ -538,3 +570,57 @@ test('observeBudgetMutation throws when no admitted, canarying record exists for
   });
   await assert.rejects(() => observeBudgetMutation('co-1', 'no-such-mutation', storeConfig, {}));
 });
+
+// --- recordLevelObservation: concurrency (Dream Cycle 2026-10-11, security) -
+
+/**
+ * Same deterministic-worst-case-interleaving technique as
+ * actor-credential-fixture.ts's `racingNonceMockHandlers`: every call to any
+ * of the 3 level-history tools blocks at a shared barrier until `concurrency`
+ * calls have arrived, then all proceed together — reproducing "every
+ * concurrent caller takes its first step before any of them takes its
+ * second" as a repeatable, non-flaky test rather than hoping the event loop
+ * happens to interleave that way. Implementation-agnostic on purpose (it
+ * doesn't matter which tool a given implementation calls first): it proves
+ * the OLD single-mutable-key implementation loses an observation under this
+ * interleaving, and that the per-observation-key implementation does not,
+ * without the test itself assuming which shape is under test.
+ */
+function racingLevelHistoryMockHandlers(concurrency: number, namespaceStore: ReturnType<typeof statefulNamespaceStore>) {
+  let arrived = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  async function gated<T>(fn: () => T): Promise<T> {
+    arrived += 1;
+    if (arrived >= concurrency) release();
+    await gate;
+    return fn();
+  }
+  return {
+    memory_store: (args: Record<string, unknown>) => gated(() => namespaceStore.memory_store(args)),
+    memory_retrieve: (args: Record<string, unknown>) => gated(() => namespaceStore.memory_retrieve(args)),
+    memory_list: (args: Record<string, unknown>) => gated(() => namespaceStore.memory_list(args)),
+  };
+}
+
+test(
+  'recordLevelObservation loses no observation when two callers race (e.g. two overlapping heartbeat fires for ' +
+    'the same company) — a lost observation here would silently corrupt the input isNewWarningStreak gates for ' +
+    'the one autonomous budget-tightening trigger this file exists to fire on',
+  async () => {
+    const namespaceStore = statefulNamespaceStore();
+    const { config } = mockBridge(racingLevelHistoryMockHandlers(2, namespaceStore));
+
+    await Promise.all([
+      recordLevelObservation('co-1', 'WARNING', config),
+      recordLevelObservation('co-1', 'WARNING', config),
+    ]);
+
+    // A third, non-racing call must see all 3 observations recorded so far
+    // (the 2 concurrent ones plus this one) — none lost to the race above.
+    const finalHistory = await recordLevelObservation('co-1', 'WARNING', config);
+    assert.equal(finalHistory.length, 3, 'all 3 observations must be durably retained; a lost update would leave only 2');
+  },
+);
