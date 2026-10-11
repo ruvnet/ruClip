@@ -19,6 +19,38 @@
  *   `employee-augmentation/interaction-profile.ts`'s precedent of a
  *   feature-specific namespace living with the feature, not bolted onto
  *   `agentdb-adapter.ts`.
+ *
+ * Dream Cycle 2026-10-11 (security): the rolling window above was a single
+ * mutable JSON-array value under one shared key, updated by
+ * `memory_retrieve` the array, append, `memory_store({upsert: true})` the
+ * whole array back — a check-then-act race (CWE-362, the same class as
+ * ACTOR-IDENTITY-VERIFICATION.md's nonce-guard TOCTOU, 2026-09-06). Every
+ * real call site is a heartbeat firing (`fire-heartbeat.ts`'s Gate 2), and
+ * heartbeat delivery is at-least-once in this design (HEARTBEATS-AND-COMMS.md
+ * never promises a schedule fires at most once) — two overlapping fires for
+ * the same company race this read-modify-write exactly like two concurrent
+ * `verifyActorCredential` calls raced the nonce guard. Confirmed by an
+ * independent test: two concurrent `recordLevelObservation` calls that both
+ * read the same prior history before either writes back produce a history
+ * missing one of the two observations (last writer wins) — silently
+ * corrupting the input `isNewWarningStreak` gates the one autonomous
+ * budget-tightening trigger this file exists to fire on.
+ *
+ * Unlike the nonce guard, this can't be fixed by making the SAME key's
+ * write atomic: `memory_store`'s only atomicity primitive is strict-insert
+ * on a key that doesn't exist yet (`upsert: false`, backed by the real
+ * `UNIQUE(namespace, key)` constraint) — there is no compare-and-swap on an
+ * existing key's VALUE, so a shared mutable blob can never be updated
+ * race-free with the tools this backend exposes, no matter how the
+ * read-modify-write is sequenced. The fix is therefore the same shape as
+ * `store/agentdb-adapter.ts`'s own cost-tracking namespace (Dream Cycle
+ * 2026-09-03): one immutable key per observation (`upsert: false`, so a
+ * same-key collision fails loudly instead of silently overwriting — in
+ * practice never happens, each key includes a fresh `randomUUID()`), the
+ * window reconstructed by `memory_list`-ing the namespace and keeping the
+ * most recent `WINDOW_SIZE` entries by the real backend's own `storedAt`
+ * timestamp. Two concurrent recorders now write to two different keys —
+ * nothing to race.
  * - `Genome.constitution` has no real value yet (Phase 4b hasn't authored
  *   one) — set to a documented placeholder. Reasoned to be safe for v1's
  *   admit-only scope: none of `/v1/agl/admit`'s seven real
@@ -55,34 +87,99 @@ import {
 const LEVEL_HISTORY_NAMESPACE = 'ruclip-autogenous-budget-triggers';
 const CONSECUTIVE_THRESHOLD = 3;
 const WINDOW_SIZE = 10; // bounded window — only the most recent readings matter for the pattern check
+// Generous relative to any plausible heartbeat cadence — large enough that the
+// window is never starved by expiry, small enough to self-bound storage
+// growth rather than retaining observations forever (same self-expiring
+// discipline as actor-credential.ts's nonce guard).
+const OBSERVATION_TTL_SECONDS = 24 * 60 * 60;
+// memory_list's own documented cap (store/agentdb-adapter.ts's cost-tracking
+// namespace hits the identical limit for the identical reason).
+const LEVEL_HISTORY_LIST_LIMIT = 1000;
 
 /** WARNING-or-worse per §4's own wording — OK/INFO are not part of the pattern. */
 const WARNING_OR_WORSE: ReadonlySet<OperatingBudgetLevel> = new Set(['WARNING', 'CRITICAL', 'HARD_STOP']);
 
-function levelHistoryKey(companyId: string): string {
-  return `ruclip:company:${companyId}:autogenous-budget-level-history`;
+function levelHistoryKeyPrefix(companyId: string): string {
+  return `ruclip:company:${companyId}:autogenous-budget-level-history:`;
 }
 
-async function recordLevelObservation(
+interface LevelObservation {
+  level: OperatingBudgetLevel;
+}
+
+/**
+ * Reads the current rolling window: lists every observation key for
+ * `companyId`, keeps the most recent `WINDOW_SIZE` by the real backend's own
+ * `storedAt` metadata (never a client clock), and retrieves each one. Each
+ * key is independent — nothing here needs one observation's fetch to
+ * complete before the next starts (same reasoning as `checkOperatingBudget`'s
+ * own session-cost fan-out), and `WINDOW_SIZE` bounds the fan-out to at most
+ * 10, so a plain `Promise.all` needs no concurrency cap the way that
+ * (up to 1000-wide) fan-out does.
+ *
+ * Known scaling caveat, inherited from `checkOperatingBudget`'s identical
+ * list-then-filter-by-prefix shape over the same `memory_list` 1000-entry
+ * cap: `LEVEL_HISTORY_NAMESPACE` is shared across every company, not
+ * company-scoped, so if the TOTAL observation count across all companies
+ * within `OBSERVATION_TTL_SECONDS` ever approached 1000, one company's own
+ * recent keys could be pushed out of the capped page before this filters by
+ * its prefix. Not a regression this change introduces (the same shape and
+ * cap already exists, accepted, in `store/agentdb-adapter.ts`) and not
+ * reachable at this project's current single-company v1 scale — flagged
+ * here, not fixed, as a next-step candidate (e.g. a company-scoped
+ * namespace, or a shorter TTL) if/when that scale changes.
+ */
+async function readLevelHistory(companyId: string, config?: AgentDbAdapterConfig): Promise<OperatingBudgetLevel[]> {
+  const prefix = levelHistoryKeyPrefix(companyId);
+  const listResult = await callTool<{ entries?: Array<{ key: string; storedAt?: string }> }>(
+    'memory_list',
+    { namespace: LEVEL_HISTORY_NAMESPACE, limit: LEVEL_HISTORY_LIST_LIMIT },
+    config,
+  );
+  const recentKeys = (listResult.entries ?? [])
+    .filter((e) => e.key.startsWith(prefix))
+    .sort((a, b) => Date.parse(a.storedAt ?? '') - Date.parse(b.storedAt ?? ''))
+    .slice(-WINDOW_SIZE)
+    .map((e) => e.key);
+
+  const observations = await Promise.all(
+    recentKeys.map((key) =>
+      callTool<{ found?: boolean; value?: unknown }>('memory_retrieve', { key, namespace: LEVEL_HISTORY_NAMESPACE }, config),
+    ),
+  );
+  return observations
+    .filter((o): o is { found: true; value: LevelObservation } => Boolean(o.found) && typeof o.value === 'object' && o.value !== null)
+    .map((o) => o.value.level);
+}
+
+/**
+ * Records one observation under its own fresh key (`upsert: false` — see
+ * file header for why a shared mutable key can never be made race-free with
+ * this backend's atomicity primitive) and returns the refreshed window.
+ * Two concurrent calls for the same company write two different keys, so
+ * neither can observe or overwrite the other's write — there is no
+ * read-modify-write step left to race.
+ *
+ * Exported (not module-private) so the concurrency regression test can
+ * exercise exactly this step directly, the same testability discipline
+ * `attest-handler.ts` documents for its own separation from HTTP wiring —
+ * isolating the race from `checkAndProposeBudgetMutation`'s own
+ * checkOperatingBudget/admit/canary side effects, none of which are part of
+ * what this function's own atomicity claim is about.
+ */
+export async function recordLevelObservation(
   companyId: string,
   level: OperatingBudgetLevel,
   config?: AgentDbAdapterConfig,
 ): Promise<OperatingBudgetLevel[]> {
-  const key = levelHistoryKey(companyId);
-  const existing = await callTool<{ found?: boolean; value?: unknown }>(
-    'memory_retrieve',
-    { key, namespace: LEVEL_HISTORY_NAMESPACE },
-    config,
-  );
-  const history: OperatingBudgetLevel[] =
-    existing.found && Array.isArray(existing.value) ? (existing.value as OperatingBudgetLevel[]) : [];
-  const updated = [...history, level].slice(-WINDOW_SIZE);
+  const key = `${levelHistoryKeyPrefix(companyId)}${randomUUID()}`;
+  const value: LevelObservation = { level };
   await callTool(
     'memory_store',
-    { key, value: JSON.stringify(updated), namespace: LEVEL_HISTORY_NAMESPACE, upsert: true },
+    { key, value: JSON.stringify(value), namespace: LEVEL_HISTORY_NAMESPACE, ttl: OBSERVATION_TTL_SECONDS, upsert: false },
     config,
   );
-  return updated;
+  return readLevelHistory(companyId, config);
 }
 
 /**
