@@ -184,6 +184,37 @@ test('recordCausalEdge refuses a reports_to edge that would close a cycle', asyn
   );
 });
 
+test('recordCausalEdge detects a cycle beyond the real tool\'s default depth-5 clamp by requesting complexityBudget.maxDepth', async () => {
+  // Reproduces the real agentdb_graph-query tool's actual clamp (verified
+  // 2026-10-15 against the real installed @claude-flow/cli@3.38.20 source
+  // AND live against the real @ruvector/graph-node native backend): the
+  // effective traversal depth is always `complexityBudget.maxDepth ?? 5`,
+  // no matter what the caller's own `depth` field says. A caller that
+  // raises `depth` alone (2026-09-05's rejected H1) never sees past hop 5.
+  const { calls, config } = mockBridge({
+    'agentdb_graph-query': (args) => {
+      const effectiveMaxDepth = (args.complexityBudget as { maxDepth?: number } | undefined)?.maxDepth ?? 5;
+      // om-9 is reachable from om-1 only 7 hops away — past the real
+      // tool's default clamp, within the candidate's requested budget.
+      if (effectiveMaxDepth >= 7) {
+        return { results: [{ nodeId: 'entity:org-member:om-9' }] };
+      }
+      return { results: [] };
+    },
+  });
+  await assert.rejects(
+    () => recordCausalEdge('entity:org-member:om-9', 'entity:org-member:om-1', 'reports_to', config),
+    AgentDbBridgeError,
+  );
+  const graphQueryCall = calls.find((c) => c.toolName === 'agentdb_graph-query');
+  assert.ok(graphQueryCall, 'expected a graph-query call');
+  const budget = graphQueryCall!.args.complexityBudget as { maxDepth?: number } | undefined;
+  assert.ok(
+    (budget?.maxDepth ?? 0) >= 7,
+    'wouldCreateCycle must request complexityBudget.maxDepth beyond the real tool\'s default clamp of 5, not rely on `depth` alone',
+  );
+});
+
 test('recordCausalEdge refuses a self-referential parent_of edge without calling the bridge', async () => {
   const { calls, config } = mockBridge({});
   await assert.rejects(

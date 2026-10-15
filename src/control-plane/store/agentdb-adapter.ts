@@ -270,13 +270,34 @@ async function recallByKey<T>(
 const CYCLE_CHECKED_RELATIONS: readonly CausalRelation[] = ['parent_of', 'reports_to'];
 
 /**
+ * 2026-10-15 correctness night: the real, currently-pinned
+ * `agentdb_graph-query` tool clamps k-hop traversal depth to
+ * `complexityBudget.maxDepth ?? 5` regardless of the `depth` field's own
+ * value (`node_modules/@claude-flow/cli/dist/src/mcp-tools/agentdb-tools.js`,
+ * `agentdbGraphQuery.handler`: `Math.min(validatePositiveInt(params.depth,
+ * 2, budget.maxDepth), budget.maxDepth)`). Passing a larger `depth` alone —
+ * the 2026-09-05 night's rejected H1 — is a no-op against the real tool.
+ * `complexityBudget.maxDepth` must be passed explicitly to raise the real
+ * clamp. Verified live against the real, installed `@ruvector/graph-node`
+ * native backend on a genuine 8-node chain: `depth: 7` alone still returned
+ * only 6 reachable nodes; `depth: 7, complexityBudget: { maxDepth: 7 }`
+ * returned all 8. 20 hops is a generous bound for any real `parent_of`/
+ * `reports_to` hierarchy without being unbounded (bounded hop caps are the
+ * standard k-hop-traversal safeguard). Residual, not silent: the real
+ * tool's SQL-CTE fallback path (used only if the native backend is
+ * unavailable) independently hard-caps depth at 3 regardless of
+ * `complexityBudget` — see `docs/dream-cycle/2026-10-15-correctness-report.md`.
+ */
+const CYCLE_CHECK_MAX_DEPTH = 20;
+
+/**
  * Deterministic k-hop reachability check (see file header for why this
  * replaces the domain model's graph-pathfinder suggestion). Returns true if
  * `candidateSourceId` is reachable from `candidateTargetId` by following
  * `relation` edges — i.e. adding `candidateSourceId -> candidateTargetId`
  * would close a cycle.
  *
- * Ground-truth correction (found tonight by reading the real, currently-
+ * Ground-truth correction (found 2026-09-05 by reading the real, currently-
  * pinned tool implementation directly —
  * `node_modules/@claude-flow/cli/dist/src/mcp-tools/agentdb-tools.js`,
  * `agentdbGraphQuery.handler`'s k-hop branch — rather than trusting this
@@ -304,7 +325,13 @@ async function wouldCreateCycle(
 ): Promise<boolean> {
   const result = await callTool<{ results?: Array<{ nodeId: string }> }>(
     'agentdb_graph-query',
-    { nodeId: candidateTargetId, mode: 'k-hop', relation, depth: 5 },
+    {
+      nodeId: candidateTargetId,
+      mode: 'k-hop',
+      relation,
+      depth: CYCLE_CHECK_MAX_DEPTH,
+      complexityBudget: { maxDepth: CYCLE_CHECK_MAX_DEPTH },
+    },
     config,
   );
   return (result.results ?? []).some((n) => n.nodeId === candidateSourceId);
