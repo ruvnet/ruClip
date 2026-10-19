@@ -1,0 +1,7 @@
+{
+  "package": "@metaharness/darwin",
+  "pinnedVersion": "0.9.3",
+  "verifiedAgainstTaskHash": "840fd8d2d6980c05657eef47034be902866c58868617f34e86ecacf8dde8ac1d",
+  "verifiedAt": "2026-10-19",
+  "note": "Exact version of @metaharness/darwin whose CLI (node_modules/.bin/metaharness-darwin, the one `npm run harness:bench-verify` invokes) was confirmed this session to produce the same ADR-076 anti-gaming taskHash ('840fd8d2d698…', hash OK) as the other two live copies (0.8.0, 0.2.8) simultaneously resolved elsewhere in this repo's dependency tree via unconstrained ('*') peerDependencies. See docs/dream-cycle/2026-10-19-developer-experience-report.md for the full measurement. Update this value, after re-verifying harness:bench-verify's hash semantics against the new version, whenever a dependency bump changes which copy npm hoists to node_modules/.bin."
+}
