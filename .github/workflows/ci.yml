@@ -24,6 +24,19 @@ jobs:
       - name: metaharness build-time genome (advisory)
         run: npm run harness:advisory
         continue-on-error: true
+      # Advisory (2026-10-19 dream-cycle finding): package.json's metaharness/
+      # ruvector/ruflo/agentbbs/radio-moe peerDependencies are unconstrained
+      # ("*"), and @metaharness/darwin itself resolves to 3 different live
+      # copies in this tree (0.9.3 top-level/hoisted, 0.8.0 and 0.2.8 nested
+      # via ruflo). All three currently agree on the ADR-076 taskHash
+      # algorithm below (verified directly, see
+      # docs/dream-cycle/2026-10-19-developer-experience-report.md) — this
+      # step just makes a future silent change to *which* copy gets hoisted
+      # loud instead of invisible. Advisory, not a new hard gate, pending
+      # human review of whether to promote it.
+      - name: metaharness-darwin version-pin drift check (advisory)
+        run: npm run harness:darwin-pin-check
+        continue-on-error: true
       # Hard gate: cheap (~2s), catches .harness/bench.json tampering per
       # ADR-076's anti-gaming intent (taskHash mismatch -> exit 1).
       - name: metaharness bench suite integrity
