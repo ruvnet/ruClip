@@ -523,11 +523,14 @@ test('applyApprovalTransition (reject): records a rejected_by edge, not approved
   assert.equal(handoffBackCall!.args.to, 'agent:om-submitter:Engineer');
 });
 
-test('applyApprovalTransition (reject) throws when deps.handoffTo is missing, after the issue has already been persisted', async () => {
-  // Documents a real ordering choice in AUTHORIZATION.md §8: the
-  // deps.handoffTo requirement is checked at step 6, AFTER persistIssue
-  // (step 5) has already written. A missing handoffTo is discovered only
-  // once the reject has otherwise fully succeeded.
+test('applyApprovalTransition (reject) throws when deps.handoffTo is missing, before any durable write (fixed ordering)', async () => {
+  // Previously documented a real ordering BUG in AUTHORIZATION.md §8: the
+  // deps.handoffTo requirement used to be checked at step 6, AFTER
+  // transitionApprovalState/witness/ApprovalTransition-persist/causal-edge/
+  // persistIssue had already run, so a missing handoffTo was discovered
+  // only once the reject had otherwise fully, durably succeeded — mirroring
+  // 'submit''s own deps.approver precondition, which has always been
+  // checked up front, before any side effect.
   const submit = baseTransition({ id: 'transition-submit', actorId: 'om-submitter', fromState: 'draft', toState: 'pending' });
   const pendingIssue = baseIssue({ approvalState: 'pending', approvalTransitionRef: 'transition-submit' });
   const approver = baseActor({ id: 'om-approver' });
@@ -549,7 +552,56 @@ test('applyApprovalTransition (reject) throws when deps.handoffTo is missing, af
   const issueStoreCall = calls.find(
     (c) => c.toolName === 'agentdb_hierarchical-store' && c.args.key === issueKeyStr,
   );
-  assert.ok(issueStoreCall, 'persistIssue already wrote the issue before the missing-handoffTo check ran');
+  assert.ok(!issueStoreCall, 'the missing-handoffTo precondition must be checked before persistIssue ever writes');
+  assert.ok(
+    !calls.some((c) => c.toolName === 'agentdb_causal-edge'),
+    'no rejected_by causal edge should be recorded when the reject is rejected for a missing handoffTo',
+  );
+  assert.ok(
+    !calls.some((c) => c.toolName === 'claims_accept-handoff'),
+    'the missing-handoffTo precondition is checked even before the claims_accept-handoff authorization step',
+  );
+});
+
+test('applyApprovalTransition (reject) rejects a deps.handoffTo from a DIFFERENT company than the verified actor, before any durable write', async () => {
+  const submit = baseTransition({ id: 'transition-submit', actorId: 'om-submitter', fromState: 'draft', toState: 'pending' });
+  const pendingIssue = baseIssue({ approvalState: 'pending', approvalTransitionRef: 'transition-submit' });
+  const approver = baseActor({ id: 'om-approver' });
+  const crossCompanySubmitter = baseActor({ id: 'om-submitter', companyId: 'co-2' });
+  const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': recallReturning(pendingIssue, approver),
+    'agentdb_hierarchical-store': () => ({ success: true }),
+    'agentdb_causal-edge': () => ({ success: true }),
+    'claims_accept-handoff': () => ({ success: true }),
+    'claims_list': activeClaimFor(approver, 'issue-1'),
+    'claims_handoff': () => ({ success: true }),
+    ...nonceMockHandlers(),
+  });
+
+  const authorization = await credentialFor(approver);
+  await assert.rejects(
+    () =>
+      applyApprovalTransition(
+        'co-1',
+        pendingIssue,
+        'reject',
+        authorization,
+        submit,
+        { reason: 'too expensive', handoffTo: crossCompanySubmitter },
+        config,
+      ),
+    ClaimAuthorizationError,
+  );
+
+  assert.ok(
+    !calls.some((c) => c.toolName === 'claims_handoff'),
+    'a cross-company handoffTo must be rejected before handoffClaim is ever called',
+  );
+  assert.ok(
+    !calls.some((c) => c.toolName === 'agentdb_hierarchical-store' && c.args.key === issueKeyStr),
+    'no partial persistence should happen when the handoffTo company mismatch is caught this early',
+  );
+  assert.ok(!calls.some((c) => c.toolName === 'agentdb_causal-edge'));
 });
 
 test(

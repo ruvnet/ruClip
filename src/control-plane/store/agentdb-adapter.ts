@@ -871,6 +871,28 @@ export async function applyApprovalTransition(
     );
   }
 
+  // 'reject''s own handoff-back precondition (deps.handoffTo must be present
+  // and share actor's company) used to be checked only at step 6, below,
+  // AFTER transitionApprovalState/witness/ApprovalTransition-persist/causal-
+  // edge/persistIssue had already run — so a missing or cross-company
+  // deps.handoffTo threw only once the reject had otherwise fully,
+  // durably succeeded (previously documented, not fixed, by this file's own
+  // test suite). Checked here instead, before any side effect, so 'reject'
+  // fails closed exactly like 'submit''s own deps.approver precondition
+  // below always has — an invalid deps.handoffTo now leaves zero durable
+  // writes, matching 'submit''s existing all-or-nothing behavior.
+  if (action === 'reject') {
+    if (!deps.handoffTo) {
+      throw new ClaimAuthorizationError(`applyApprovalTransition: action 'reject' requires deps.handoffTo`);
+    }
+    if (deps.handoffTo.companyId !== actor.companyId) {
+      throw new ClaimAuthorizationError(
+        `applyApprovalTransition: deps.handoffTo '${deps.handoffTo.id}' belongs to company ` +
+          `'${deps.handoffTo.companyId}', but actor '${actor.id}' belongs to company '${actor.companyId}'`,
+      );
+    }
+  }
+
   // AUTHORIZATION.md §8 steps 1-2 — authorization choreography runs BEFORE
   // any state-machine computation, so a failure here short-circuits before
   // transitionApprovalState is ever called.
@@ -952,11 +974,10 @@ export async function applyApprovalTransition(
 
   // AUTHORIZATION.md §8 step 6 — hand the claim back to the original
   // submitter after a legal reject, so they can accept and later revise.
+  // deps.handoffTo's presence/company-match was already validated above,
+  // before any side effect in this function ran.
   if (action === 'reject') {
-    if (!deps.handoffTo) {
-      throw new ClaimAuthorizationError(`applyApprovalTransition: action 'reject' requires deps.handoffTo`);
-    }
-    await handoffClaim(issue.id, actor, deps.handoffTo, { reason: 'returned for revision' }, config);
+    await handoffClaim(issue.id, actor, deps.handoffTo!, { reason: 'returned for revision' }, config);
   }
 
   return { issue: nextIssue, transition };
