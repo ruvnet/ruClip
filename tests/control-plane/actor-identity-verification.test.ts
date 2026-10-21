@@ -95,6 +95,28 @@ function orgMemberRecall(member: OrgMember) {
       : { results: [] };
 }
 
+// --- mintActorCredential: ttlSeconds policy ceiling -------------------------
+// ACTOR-IDENTITY-VERIFICATION.md's security model has no mid-lifetime
+// revocation list; it leans on "the short (15 min) TTL bounds the exposure
+// window" as the mitigation instead. Nothing previously enforced that a
+// caller-supplied ttlSeconds actually honors that documented 15-minute
+// (900s) ceiling.
+const POLICY_CEILING_SECONDS = 15 * 60;
+
+test('mintActorCredential rejects a ttlSeconds exceeding the documented policy ceiling', async () => {
+  const actor = baseActor();
+  await assert.rejects(
+    () => credentialFor(actor, { ttlSeconds: POLICY_CEILING_SECONDS + 1 }),
+    ActorIdentityVerificationError,
+  );
+});
+
+test('mintActorCredential still mints normally at exactly the policy ceiling', async () => {
+  const actor = baseActor();
+  const { credential } = await credentialFor(actor, { ttlSeconds: POLICY_CEILING_SECONDS });
+  assert.ok(credential.signature, 'expected a successfully minted, signed credential at the ceiling boundary');
+});
+
 // --- verifyActorCredential: §7 required cases -------------------------------
 
 test('verifyActorCredential succeeds for a validly-signed, unexpired, unreplayed credential', async () => {

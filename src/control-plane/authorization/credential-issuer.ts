@@ -58,6 +58,21 @@ const execFileAsync = promisify(execFile);
 
 const DEFAULT_TTL_SECONDS = 15 * 60; // matches federation_bbs_human_join's own default (§1)
 
+/**
+ * The documented policy ceiling (ACTOR-IDENTITY-VERIFICATION.md §1: "short
+ * TTL, default 15 min"; §8: a deactivated-mid-lifetime credential holder
+ * "isn't designed here — the short (15 min) TTL bounds the exposure window")
+ * — the design's own stated mitigation for not having mid-credential-lifetime
+ * revocation. `ttlSeconds` may be shorter than this, including <= 0 (tests
+ * use a negative value to mint an already-expired credential for exercising
+ * `verifyActorCredential`'s own expiry check), but nothing elsewhere in this
+ * codebase re-checks that a credential's embedded `expiresAt` actually
+ * honors this ceiling — a caller (now or a future API/CLI surface) passing
+ * an inflated `ttlSeconds` would otherwise silently mint a longer-lived
+ * credential than the one mitigation this security model relies on.
+ */
+export const MAX_TTL_SECONDS = DEFAULT_TTL_SECONDS;
+
 export interface IssuerKeyConfig {
   /** Test/dev-only escape hatch — a PKCS8 PEM Ed25519 private key, bypassing the GCP Secret Manager shell-out entirely. Never logged. */
   privateKeyPem?: string;
@@ -165,11 +180,19 @@ export async function mintActorCredential(
   assertSafeId(orgMemberId, 'orgMemberId');
   assertSafeId(companyId, 'companyId');
 
+  const ttlSeconds = opts?.ttlSeconds ?? DEFAULT_TTL_SECONDS;
+  if (ttlSeconds > MAX_TTL_SECONDS) {
+    throw new ActorIdentityVerificationError(
+      `mintActorCredential: ttlSeconds (${ttlSeconds}) exceeds the documented policy ceiling of ` +
+        `${MAX_TTL_SECONDS}s (ACTOR-IDENTITY-VERIFICATION.md's short-TTL exposure-window mitigation) — refusing ` +
+        'to mint a longer-lived credential than the design accounts for',
+    );
+  }
+
   const { privateKey, publicKeyDerHex } = await loadIssuerKeypair(issuerConfig);
   const canonicalBytes = await loadRadioMoeCanonicalBytes();
 
   const now = new Date();
-  const ttlSeconds = opts?.ttlSeconds ?? DEFAULT_TTL_SECONDS;
   const issuedAt = now.toISOString();
   const expiresAt = new Date(now.getTime() + ttlSeconds * 1000).toISOString();
   const nonce = randomUUID();
