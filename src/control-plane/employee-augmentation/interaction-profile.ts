@@ -252,8 +252,29 @@ export async function recomputeInteractionSignals(
   }
 
   const allTransitions = await listApprovalTransitionsForCompany(companyId, config);
+
+  // Dream Cycle 2026-10-23 (performance/memory): only an issue where
+  // orgMemberId actually made an approve/reject decision can ever
+  // contribute a latency sample below — grouping-and-sorting every OTHER
+  // issue's transitions too (the company-wide norm before this change)
+  // does real, wasted, unbounded-with-company-size work on this function's
+  // hot path (applyApprovalTransition's deps.interactionLearning wiring,
+  // one call per approve/reject by a consenting human). Collecting the
+  // relevant issue ids first — one cheap linear pass, no Map/array
+  // allocation — then scoping the grouping+sort below to just those issues
+  // produces the identical output (an irrelevant issue contributed zero
+  // samples either way) while keeping the Map/array/sort cost proportional
+  // to this member's own issue count, not the company's.
+  const relevantIssueIds = new Set<string>();
+  for (const t of allTransitions) {
+    if (t.actorId === orgMemberId && (t.action === 'approve' || t.action === 'reject')) {
+      relevantIssueIds.add(t.issueId);
+    }
+  }
+
   const byIssue = new Map<string, ApprovalTransition[]>();
   for (const t of allTransitions) {
+    if (!relevantIssueIds.has(t.issueId)) continue;
     const list = byIssue.get(t.issueId) ?? [];
     list.push(t);
     byIssue.set(t.issueId, list);
