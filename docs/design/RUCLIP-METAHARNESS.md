@@ -28,7 +28,7 @@ possibly-flaky/slow `npm test` per the tool's stated rationale. Hand-adding
 tasks to the auto-generated scaffold broke `metaharness_bench --op verify`
 (exit 1, no error detail surfaced through the MCP wrapper) — tracing this
 down (not giving up at the first failure) led to `@metaharness/darwin`'s
-`dist/bench/suite.js`, ADR-076's anti-gaming control: `taskHash` is
+`dist/bench/suite.js`, ADR-0002's anti-gaming control: `taskHash` is
 `sha256(JSON.stringify(recursively-key-sorted(tasks)))`, so a benchmark
 task set can't be quietly hand-edited to look easier without the hash
 catching it. Recomputed the hash correctly in Python matching that exact
@@ -236,7 +236,7 @@ left is CI wiring, genuinely small:
   yet a hard gate (no baseline history exists to set a threshold against).
 - Add a CI step that runs `metaharness_bench --op verify --suite
   .harness/bench.json` — cheap (~2s per §0's confirmed `durationMs`), fails
-  fast on suite tampering per ADR-076's own anti-gaming intent.
+  fast on suite tampering per ADR-0002's own anti-gaming intent.
 - **No `redblue.yaml`, no `metaharness_redblue` wiring** — §3's honest
   substitute (the existing test suite) is already in place; nothing new to
   build until Phase 2 ships a live target.
