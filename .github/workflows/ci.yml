@@ -25,6 +25,10 @@ jobs:
         run: npm run harness:advisory
         continue-on-error: true
       # Hard gate: cheap (~2s), catches .harness/bench.json tampering per
-      # ADR-076's anti-gaming intent (taskHash mismatch -> exit 1).
+      # ADR-0002's anti-gaming intent (taskHash mismatch -> exit 1).
       - name: metaharness bench suite integrity
         run: npm run harness:bench-verify
+      # Advisory: dangling ADR-NNN citation scanner (dream-cycle 2026-10-24).
+      - name: ADR citation check (advisory)
+        run: npm run harness:check-adr-refs
+        continue-on-error: true

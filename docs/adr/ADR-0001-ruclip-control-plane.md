@@ -227,6 +227,11 @@ adopting paperclip's own Node/React/Postgres stack:
 
 ## Links
 
+- ADR-0002 — `.harness/bench.json`'s anti-gaming `taskHash` hard gate
+  (backfilled 2026-10-24; `ci.yml`/`RUCLIP-METAHARNESS.md` cited a
+  three-digit decision id with no matching file for this repo's entire
+  history until the dream-cycle 2026-10-24 developer-experience night
+  caught it)
 - ADR-103 — signed witness manifest pattern (audit trail reused here)
 - ADR-150 — MetaHarness integration surfaces (governance substrate reused here)
 - ADR-164 — agentbbs federation Phase 1 (comms layer reused here)
