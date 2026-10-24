@@ -18,6 +18,12 @@ const ROOT = new URL('..', import.meta.url).pathname;
 const SCAN_DIRS = ['src', 'services', 'docs', '.github'];
 const SCAN_EXTENSIONS = new Set(['.ts', '.md', '.yml', '.yaml']);
 const SKIP_DIR_NAMES = new Set(['node_modules', 'dist', '.git']);
+// docs/dream-cycle/ is an append-only historical log (nightly reports,
+// LEDGER.md) that legitimately quotes past states verbatim, including
+// citations that were dangling (or not yet created) at the time a given
+// night ran — it is not living documentation whose ADR-NNN citations must
+// stay resolvable, so it's out of scope for this check.
+const SKIP_RELATIVE_PREFIXES = ['docs/dream-cycle'];
 
 function walk(dir) {
   const files = [];
@@ -30,6 +36,7 @@ function walk(dir) {
   for (const entry of entries) {
     if (SKIP_DIR_NAMES.has(entry)) continue;
     const fullPath = join(dir, entry);
+    if (SKIP_RELATIVE_PREFIXES.some((p) => relative(ROOT, fullPath).startsWith(p))) continue;
     const stat = statSync(fullPath);
     if (stat.isDirectory()) {
       files.push(...walk(fullPath));

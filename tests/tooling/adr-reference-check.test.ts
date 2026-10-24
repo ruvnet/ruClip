@@ -55,6 +55,10 @@ test('LIVE: this repo\'s own src/services/docs/.github trees have no broken inte
   const root = process.cwd();
   const skipDirs = new Set(['node_modules', 'dist', '.git']);
   const extensions = new Set(['.ts', '.md', '.yml', '.yaml']);
+  // docs/dream-cycle/ is an append-only historical log (see
+  // scripts/check-adr-refs.mjs's matching exclusion for why) — out of
+  // scope for this check.
+  const skipRelativePrefixes = ['docs/dream-cycle'];
 
   function walk(dir: string): string[] {
     let entries: string[];
@@ -67,6 +71,7 @@ test('LIVE: this repo\'s own src/services/docs/.github trees have no broken inte
     for (const entry of entries) {
       if (skipDirs.has(entry)) continue;
       const fullPath = join(dir, entry);
+      if (skipRelativePrefixes.some((p) => relative(root, fullPath).startsWith(p))) continue;
       if (statSync(fullPath).isDirectory()) {
         files.push(...walk(fullPath));
       } else if (extensions.has(entry.slice(entry.lastIndexOf('.')))) {
