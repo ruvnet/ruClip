@@ -79,6 +79,27 @@ async function resolveIdentityMapJson(config?: IdentityMapConfig): Promise<strin
   }
 }
 
+/**
+ * Google account email matching is case-insensitive in practice (the local
+ * part is case-sensitive per RFC 5321 in theory, but Google — like every
+ * other major provider — does not honor that: `Ruv@ruv.net` and
+ * `ruv@ruv.net` are the same Google account; the domain part is
+ * case-insensitive by DNS rules regardless). A JS object-key lookup is not:
+ * `map['Ruv@ruv.net']` and `map['ruv@ruv.net']` are different keys. Since
+ * `handleAttestRequest` passes `claims.email` — a verified Google IAP/OIDC
+ * claim whose exact casing is Google's to choose, not this service's — straight
+ * into `lookupIdentity` with no normalization on either side, a real, already
+ * -mapped employee whose verified claim happens to differ in case from however
+ * the `ruclip-attester-identity-map` secret's JSON was typed (by hand, by
+ * whoever provisions it) gets the same generic 403 as someone with no mapping
+ * at all — a false-negative lockout of a legitimate identity, confirmed by an
+ * independent test. Both sides are normalized the same way so this can't
+ * reoccur from either direction.
+ */
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
 function parseIdentityMap(json: string): Record<string, IdentityMappingEntry> {
   let parsed: unknown;
   try {
@@ -89,6 +110,7 @@ function parseIdentityMap(json: string): Record<string, IdentityMappingEntry> {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Identity-mapping secret must be a JSON object of email -> {orgMemberId, companyId}');
   }
+  const normalized: Record<string, IdentityMappingEntry> = {};
   for (const [email, entry] of Object.entries(parsed as Record<string, unknown>)) {
     if (
       !entry ||
@@ -98,8 +120,16 @@ function parseIdentityMap(json: string): Record<string, IdentityMappingEntry> {
     ) {
       throw new Error(`Identity-mapping secret entry for '${email}' is malformed (expected {orgMemberId, companyId})`);
     }
+    const key = normalizeEmail(email);
+    if (Object.prototype.hasOwnProperty.call(normalized, key)) {
+      throw new Error(
+        `Identity-mapping secret has two entries that collide once case-normalized ('${email}') — ` +
+          'each Google account email may appear at most once, in any casing',
+      );
+    }
+    normalized[key] = entry as IdentityMappingEntry;
   }
-  return parsed as Record<string, IdentityMappingEntry>;
+  return normalized;
 }
 
 const CACHE_TTL_MS = 60_000;
@@ -123,5 +153,5 @@ async function loadIdentityMap(config?: IdentityMapConfig): Promise<Record<strin
 
 export async function lookupIdentity(email: string, config?: IdentityMapConfig): Promise<IdentityMappingEntry | null> {
   const map = await loadIdentityMap(config);
-  return map[email] ?? null;
+  return map[normalizeEmail(email)] ?? null;
 }
