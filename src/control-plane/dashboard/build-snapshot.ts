@@ -16,6 +16,7 @@ import {
   getChildIssueIds,
   getBlockerIssueIds,
   operatingBudgetLevel,
+  mapWithConcurrency,
   DEFAULT_OPERATING_BUDGET_THRESHOLDS,
   type AgentDbAdapterConfig,
   type OperatingBudgetLevel,
@@ -110,6 +111,24 @@ export interface DashboardSnapshot {
  */
 type OrgMemberCache = Map<string, Promise<DashboardOrgMemberRef | null>>;
 
+/**
+ * Upper bound on simultaneous in-flight `buildIssueSnapshot` calls per
+ * goal (each of which fans out its own `getChildIssueIds`/
+ * `getBlockerIssueIds` graph-query round trips — see that function below).
+ *
+ * Dream Cycle 2026-10-27 (performance/memory + docs/api scan): before this
+ * change, `buildGoalSnapshot` ran `rawIssues.map(buildIssueSnapshot)`
+ * through a bare `Promise.all` — every issue in a goal fired its graph
+ * queries at once, so peak concurrent `agentdb_graph-query` RPCs scaled
+ * O(goal's issue count) with no ceiling, the same unbounded-fan-out shape
+ * `checkOperatingBudget` had before the 2026-09-03 fix (see
+ * `SESSION_COST_FETCH_CONCURRENCY` in store/agentdb-adapter.ts) — just
+ * never applied here. Reuses that exact bounded-worker-pool
+ * (`mapWithConcurrency`, now exported) instead of introducing a second,
+ * differently-shaped concurrency primitive.
+ */
+const DASHBOARD_ISSUE_FANOUT_CONCURRENCY = 25;
+
 async function resolveOrgMemberRef(
   companyId: string,
   orgMemberId: string | null,
@@ -161,7 +180,9 @@ async function buildGoalSnapshot(
     resolveOrgMemberRef(companyId, goal.ownerId, cache, config),
     listIssuesForGoal(companyId, goal.id, config),
   ]);
-  const issues = await Promise.all(rawIssues.map((issue) => buildIssueSnapshot(companyId, issue, cache, config)));
+  const issues = await mapWithConcurrency(rawIssues, DASHBOARD_ISSUE_FANOUT_CONCURRENCY, (issue) =>
+    buildIssueSnapshot(companyId, issue, cache, config),
+  );
   return {
     id: goal.id,
     description: goal.description,
