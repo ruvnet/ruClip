@@ -1318,8 +1318,14 @@ const SESSION_COST_FETCH_CONCURRENCY = 25;
  * preserving `items`' order in the returned array (a fixed-size worker
  * pool pulling from a shared cursor, not chunk-and-await-each-chunk, so a
  * single slow key never stalls the other `limit - 1` workers).
+ *
+ * Exported (Dream Cycle 2026-10-27, performance) so other call sites with
+ * the same "independent round trips, no sequencing dependency between
+ * them" shape — e.g. dashboard/build-snapshot.ts's per-issue fan-out — can
+ * reuse this exact bounded-worker-pool, instead of each one hand-rolling
+ * its own cap or falling back to an unbounded `Promise.all`.
  */
-async function mapWithConcurrency<T, R>(
+export async function mapWithConcurrency<T, R>(
   items: readonly T[],
   limit: number,
   fn: (item: T) => Promise<R>,
