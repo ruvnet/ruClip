@@ -65,10 +65,13 @@ export interface IssuerKeyConfig {
   secretName?: string;
   /** Overrides RUCLIP_ISSUER_SIGNING_PROJECT. */
   secretProject?: string;
+  /** Test-only escape hatch — replaces the real `gcloud` shell-out while still exercising the resolve/cache path below. */
+  secretAccessor?: () => Promise<string>;
 }
 
 async function resolvePrivateKeyPem(issuerConfig?: IssuerKeyConfig): Promise<string> {
   if (issuerConfig?.privateKeyPem) return issuerConfig.privateKeyPem;
+  if (issuerConfig?.secretAccessor) return issuerConfig.secretAccessor();
 
   const secretName = issuerConfig?.secretName ?? process.env.RUCLIP_ISSUER_SIGNING_SECRET;
   const secretProject = issuerConfig?.secretProject ?? process.env.RUCLIP_ISSUER_SIGNING_PROJECT;
@@ -107,8 +110,7 @@ interface IssuerKeypair {
   publicKeyDerHex: string;
 }
 
-async function loadIssuerKeypair(issuerConfig?: IssuerKeyConfig): Promise<IssuerKeypair> {
-  const pem = await resolvePrivateKeyPem(issuerConfig);
+function deriveIssuerKeypair(pem: string): IssuerKeypair {
   let privateKey: KeyObject;
   try {
     privateKey = createPrivateKey(pem);
@@ -120,6 +122,33 @@ async function loadIssuerKeypair(issuerConfig?: IssuerKeyConfig): Promise<Issuer
   }
   const publicKeyDerHex = createPublicKey(privateKey).export({ type: 'spki', format: 'der' }).toString('hex');
   return { privateKey, publicKeyDerHex };
+}
+
+// Dream Cycle 2026-10-28 (performance): services/ruclip-attester/src/signing-key.ts's
+// ATTESTER_KEYPAIR_CACHE_TTL_MS (dream-cycle PR #59, 2026-10-06) closed this exact
+// "re-reads its signing secret on every call" gap for the attester's OWN key, mirroring
+// identity-map.ts/google-token.ts's own short-TTL caches. This file — ruClip's own
+// issuer key, a structurally distinct secret (see file header) — shells out to the
+// `gcloud` CLI (a full subprocess spawn, slower than any of those three siblings' SDK
+// calls) on every single mintActorCredential/resolveAdmittedIssuerKeys call and was not
+// covered by that fix. Same pattern, same TTL, same bypass-on-override convention.
+const ISSUER_KEYPAIR_CACHE_TTL_MS = 60_000;
+let issuerKeypairCache: { value: IssuerKeypair; fetchedAt: number } | null = null;
+
+async function loadIssuerKeypair(issuerConfig?: IssuerKeyConfig): Promise<IssuerKeypair> {
+  // The test/dev privateKeyPem override always re-derives fresh so tests observe the
+  // exact fixture they passed, never a stale cached one from a previous test — same
+  // convention as identity-map.ts's mapJson override / signing-key.ts's own override.
+  if (issuerConfig?.privateKeyPem !== undefined) {
+    return deriveIssuerKeypair(issuerConfig.privateKeyPem);
+  }
+  if (issuerKeypairCache && Date.now() - issuerKeypairCache.fetchedAt < ISSUER_KEYPAIR_CACHE_TTL_MS) {
+    return issuerKeypairCache.value;
+  }
+  const pem = await resolvePrivateKeyPem(issuerConfig);
+  const value = deriveIssuerKeypair(pem);
+  issuerKeypairCache = { value, fetchedAt: Date.now() };
+  return value;
 }
 
 interface RadioMoeCanonicalModule {
