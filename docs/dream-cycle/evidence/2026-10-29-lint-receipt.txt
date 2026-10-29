@@ -1,0 +1,28 @@
+
+> ruclip@0.0.1 lint
+> eslint .
+
+
+/home/user/ruClip/services/ruclip-attester/src/signing-key.ts
+  118:7  error  There is no `cause` attached to the symptom error being thrown  preserve-caught-error
+
+/home/user/ruClip/src/control-plane/authorization/human-identity-attestation.ts
+  52:3  error  'actorCredentialFrame' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/user/ruClip/src/control-plane/governance/propose-budget-mutation.ts
+  151:40  error  'newThreshold' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/user/ruClip/src/control-plane/store/agentdb-adapter.test.ts
+  50:26  error  '_h' is defined but never used  @typescript-eslint/no-unused-vars
+  65:26  error  '_h' is defined but never used  @typescript-eslint/no-unused-vars
+  82:24  error  '_h' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/user/ruClip/tests/control-plane/actor-credential-nonce-durable-backend.test.ts
+  46:1  warning  Unused eslint-disable directive (no problems were reported from '@typescript-eslint/consistent-type-imports')
+
+/home/user/ruClip/tests/control-plane/actor-identity-verification.test.ts
+  163:9  error  'actor' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+✖ 8 problems (7 errors, 1 warning)
+  0 errors and 1 warning potentially fixable with the `--fix` option.
+
