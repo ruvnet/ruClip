@@ -17,6 +17,15 @@ jobs:
       - run: npm install --no-audit --no-fund || true
       - run: npm run build
       - run: npm test
+      # Dream Cycle 2026-10-29 (developer-experience): first real lint gate,
+      # replacing the former `npm run lint` no-op stub. Advisory only for
+      # now (continue-on-error) — the first run surfaced 7 real findings
+      # (docs/dream-cycle/2026-10-29-developer-experience-report.md) that
+      # predate this gate; promoting it to a hard failure is a separate,
+      # future decision once a human has triaged that backlog.
+      - name: lint (advisory)
+        run: npm run lint
+        continue-on-error: true
       # ruclip-metaharness (docs/design/RUCLIP-METAHARNESS.md §5): advisory
       # informational gate — no threshold to fail against yet (no baseline
       # history), so a bad score/genome/mcp-scan reading is surfaced in the
