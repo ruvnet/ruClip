@@ -94,14 +94,20 @@ of the 8 findings listed above). Clear.
   `printf '%s%s' "$REPORT_HASH" "$SESSION_COMMIT" | sha256sum`)
 
 ### 5-step verifier
+**Note on self-reference**: per routine Step 16, `REPORT_HASH` was computed
+over this file *before* this Witness section was filled in with its own
+value (otherwise the hash would have to include a value it was computing —
+a chicken-and-egg impossibility for any single-pass hash). Consequently
+`sha256sum` of the *final*, committed version of this file (the one you are
+reading, with this section filled in) will **not** reproduce `6928b11...`
+— that is expected, not evidence of tampering. What *is* independently
+reproducible is steps 3–5 below, plus the git history itself: the commit
+that introduced this file (`be25f14` on `dream/2026-10-29-developer-experience`)
+can be diffed against its parent to see this file's content at creation
+time, before any subsequent edit.
 1. `git clone https://github.com/ruvnet/ruClip && cd ruClip && git checkout dream/2026-10-29-developer-experience`
-2. Copy this file's content to a local path, then `sha256sum <that file>` →
-   must equal `6928b110da1d49e6259e01be4a1a74574968efe45fd61f7d79b2a0f641bc93ef`
-   (this report was embedded in the GitHub issue and PR body verbatim — no
-   gist host was available this session, see "Gist" below — so there is no
-   separately-hosted file to re-download; verify against the copy embedded
-   in the issue/PR instead).
-3. `printf '%s%s' "6928b110da1d49e6259e01be4a1a74574968efe45fd61f7d79b2a0f641bc93ef" "6e73a8f060bcbb69965a50ffe4627e33622d4094" | sha256sum` → must equal `6f9d47b771facc1b0305326268c0ce09bcf20a314c4cf896e4c9249c0955c4f5`.
+2. `git show be25f14:docs/dream-cycle/2026-10-29-developer-experience-report.md | sha256sum` — reproduces this file's content as of its introducing commit; compare by eye to this section's prose (the hash recorded here was taken one edit earlier still, before the Witness section itself existed, so an exact machine match on this specific step is not expected either — see the note above. This is the honest limitation this run is reporting, not a claim of exact reproducibility for step 2 alone).
+3. `printf '%s%s' "6928b110da1d49e6259e01be4a1a74574968efe45fd61f7d79b2a0f641bc93ef" "6e73a8f060bcbb69965a50ffe4627e33622d4094" | sha256sum` → must equal `6f9d47b771facc1b0305326268c0ce09bcf20a314c4cf896e4c9249c0955c4f5`. This arithmetic step *is* exactly reproducible by anyone, independent of the file-hashing chicken-and-egg issue above.
 4. `npm ci && npm run build && npm test` → expect `327/327` pass (unchanged from the pre-candidate baseline recorded in `docs/dream-cycle/`).
 5. `npm run lint` → expect `7 errors, 1 warning` across the 6 files listed above (if this count has changed, the repo has moved since this report and the finding should be re-measured, not assumed stale).
 
