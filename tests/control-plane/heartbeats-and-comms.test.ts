@@ -26,6 +26,7 @@ import {
   setOperatingBudget,
   applyApprovalTransition,
   ApprovalGateViolationError,
+  AgentDbBridgeError,
 } from '../../src/control-plane/store/agentdb-adapter.js';
 import { ClaimAuthorizationError } from '../../src/control-plane/authorization/claims-authorization.js';
 import { fireHeartbeat } from '../../src/control-plane/heartbeat/fire-heartbeat.js';
@@ -374,6 +375,31 @@ test(
     assert.equal(result.level, 'WARNING'); // >= 0.75 threshold
     assert.ok(calls.some((c) => c.toolName === 'memory_list' && c.args.namespace === 'ruclip-cost-tracking'));
     assert.ok(!calls.some((c) => c.toolName === 'memory_retrieve' && c.args.key === 'co-2:session-unrelated'));
+  },
+);
+
+test(
+  'checkOperatingBudget fails closed (throws) rather than silently undercounting spend when memory_list\'s ' +
+    '1000-entry page comes back full — Dream Cycle 2026-10-30 correctness finding: a full page is indistinguishable ' +
+    'from a truncated one (memory_list has no cursor/offset), so proceeding with only the visible keys can report ' +
+    'a utilizationPct lower than the truth and let Gate 2 fail open exactly when sustained usage should trip it',
+  async () => {
+    const entries = Array.from({ length: 1000 }, (_, i) => ({ key: `co-1:session-${i}` }));
+    const { config } = mockBridge({
+      'memory_retrieve': (args) => {
+        if (args.key === 'co-1:budget-config') {
+          return { found: true, value: { budgetUsd: 1_000_000, thresholds: { info: 0.5, warning: 0.75, critical: 0.9, hardStop: 1.0 } } };
+        }
+        // Each visible key is cheap on its own; the real spend lives in the keys this page can't represent.
+        return { found: true, value: { total_cost_usd: 1 } };
+      },
+      'memory_list': () => ({ entries }),
+    });
+    await assert.rejects(
+      () => checkOperatingBudget('co-1', config),
+      (err: unknown) => err instanceof AgentDbBridgeError,
+      'expected checkOperatingBudget to fail closed on a full (possibly-truncated) memory_list page',
+    );
   },
 );
 
