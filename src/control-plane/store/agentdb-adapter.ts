@@ -1313,6 +1313,9 @@ export function operatingBudgetLevel(utilizationPct: number, thresholds: Operati
  */
 const SESSION_COST_FETCH_CONCURRENCY = 25;
 
+/** The `memory_list` page size `checkOperatingBudget` requests — see that function's own truncation check. */
+const OPERATING_BUDGET_SESSION_LIST_LIMIT = 1000;
+
 /**
  * Runs `fn` over `items` with at most `limit` calls in flight at once,
  * preserving `items`' order in the returned array (a fixed-size worker
@@ -1382,10 +1385,29 @@ export async function checkOperatingBudget(
 
   const listResult = await callTool<{ entries?: Array<{ key: string }> }>(
     'memory_list',
-    { namespace: RUCLIP_COST_NAMESPACE, limit: 1000 },
+    { namespace: RUCLIP_COST_NAMESPACE, limit: OPERATING_BUDGET_SESSION_LIST_LIMIT },
     config,
   );
-  const sessionKeys = (listResult.entries ?? [])
+  const entries = listResult.entries ?? [];
+  // Dream Cycle 2026-10-30 (correctness): `memory_list` has no cursor/offset
+  // — a page exactly as long as the requested limit is indistinguishable
+  // from a truncated one. Silently summing only the visible keys would let
+  // utilizationPct come out lower than the truth for a company (or shared
+  // namespace) with >= this many tracked cost entries, which can make Gate
+  // 2's HARD_STOP circuit breaker fail OPEN under exactly the sustained-
+  // usage condition it exists to catch. Fail closed instead, matching this
+  // file's own Gate 1/Gate 2 philosophy of pausing rather than proceeding
+  // on uncertainty — same posture as `recallByKey`'s "a full page means
+  // widen" check above, but here there is no further page to widen to.
+  if (entries.length >= OPERATING_BUDGET_SESSION_LIST_LIMIT) {
+    throw new AgentDbBridgeError(
+      `checkOperatingBudget for company '${companyId}' cannot safely sum operating spend: memory_list's ` +
+        `${RUCLIP_COST_NAMESPACE} page came back full (${entries.length} >= limit ` +
+        `${OPERATING_BUDGET_SESSION_LIST_LIMIT}), so the true session-cost key count may exceed what this call ` +
+        'can see — refusing to report a possibly-undercounted utilizationPct',
+    );
+  }
+  const sessionKeys = entries
     .map((e) => e.key)
     .filter((key) => key.startsWith(operatingSessionKeyPrefix(companyId)));
 
