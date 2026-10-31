@@ -1055,6 +1055,13 @@ export async function persistHeartbeatSchedule(
   authorization?: ActorAuthorization,
   previousStatus?: HeartbeatStatus,
   config?: AgentDbAdapterConfig,
+  // Dream Cycle 2026-10-31 (security): the one discriminant fireHeartbeat's
+  // own legitimate budget-block auto-pause needs so it can keep writing
+  // without `authorization` while every OTHER caller pausing an active
+  // schedule cannot. Defaults to false/omitted everywhere except
+  // fireHeartbeat's own pauseAndPersist call site — nothing else in this
+  // repo may set it.
+  systemInitiated?: boolean,
 ): Promise<void> {
   assertValidHeartbeatSchedule(schedule);
 
@@ -1076,16 +1083,32 @@ export async function persistHeartbeatSchedule(
   // operations HEARTBEATS-AND-COMMS.md §6 / ACTOR-IDENTITY-VERIFICATION.md
   // §5 item 4 require authorization for, and is now enforced — confirmed
   // exploitable (zero authorization needed to resume) by an independent
-  // test. An actor-initiated PAUSE (active -> paused) remains genuinely
-  // ambiguous with fireHeartbeat's own system pause at the parameter level —
-  // both are the identical transition with no discriminant between "budget
-  // gate paused this" and "an actor asked to pause this" — closing that
-  // specific case needs a design decision (e.g. an explicit pause-source
-  // parameter), not a mechanical fix, so it stays open, same disposition as
-  // before this round.
+  // test.
   if (stored !== null && stored.status === 'paused' && schedule.status === 'active' && !authorization) {
     throw new ApprovalGateViolationError(
       `Resuming HeartbeatSchedule '${schedule.id}' requires an acting OrgMember (HEARTBEATS-AND-COMMS.md §6) — ` +
+        `authorization was not supplied`,
+    );
+  }
+  // Dream Cycle 2026-10-31 (security): an actor-initiated PAUSE (active ->
+  // paused) was the one transition left genuinely unauthenticated after
+  // round 7, because it's structurally identical to fireHeartbeat's own
+  // system auto-pause on a budget block — there was no discriminant between
+  // "a human asked to pause this" and "the budget gate paused this".
+  // Confirmed exploitable (zero authorization needed to pause) by an
+  // independent test before this fix. `systemInitiated` is that
+  // discriminant: fireHeartbeat's own pauseAndPersist now passes
+  // `systemInitiated: true` for its unauthenticated writes; every other
+  // caller pausing an active schedule must supply `authorization`.
+  if (
+    stored !== null &&
+    stored.status === 'active' &&
+    schedule.status === 'paused' &&
+    !authorization &&
+    !systemInitiated
+  ) {
+    throw new ApprovalGateViolationError(
+      `Pausing HeartbeatSchedule '${schedule.id}' requires an acting OrgMember (HEARTBEATS-AND-COMMS.md §6) — ` +
         `authorization was not supplied`,
     );
   }

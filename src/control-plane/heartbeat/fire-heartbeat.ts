@@ -57,8 +57,9 @@ async function pauseAndPersist(
   });
   // No `actor` — firing is system-initiated cadence upkeep, not one of the
   // actor-driven create/pause/resume operations HEARTBEATS-AND-COMMS.md §6
-  // requires a live claim for.
-  await persistHeartbeatSchedule(pausedSchedule, undefined, schedule.status, config);
+  // requires a live claim for. `systemInitiated: true` is the one call site
+  // in this repo allowed to pause an active schedule without authorization.
+  await persistHeartbeatSchedule(pausedSchedule, undefined, schedule.status, config, true);
   return { schedule: pausedSchedule, outcome };
 }
 
