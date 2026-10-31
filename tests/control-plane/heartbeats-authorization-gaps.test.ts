@@ -60,22 +60,42 @@
  * 2 now locks down the rejection for a caller impersonating a genesis create
  * with no actor and no live claim on the target issue at all.
  *
+ * FINDING 3 (tests 3-4 below), Dream Cycle 2026-10-31 (security): the
+ * create-path and resume-path checks above (rounds 4/7) left exactly one
+ * transition unauthenticated — an actor-initiated PAUSE (active ->
+ * paused) — because it is structurally identical to fireHeartbeat's own
+ * legitimate system auto-pause on a budget block, and nothing
+ * distinguished the two. Confirmed exploitable (zero authorization needed
+ * to pause an active schedule) by an independent test before this fix —
+ * `persistHeartbeatSchedule` never even called `recallOrgMember`/
+ * `claims_list`. Fixed with the one discriminant the existing round-7
+ * comment named as the missing piece: a `systemInitiated` parameter, set
+ * only by fireHeartbeat's own `pauseAndPersist`. Test 3 proves the exploit
+ * is now rejected; test 4 proves fireHeartbeat's own unauthenticated
+ * system pause (the one legitimate no-authorization caller) still works —
+ * also covered end-to-end by the existing Gate 1/Gate 2 tests in
+ * heartbeats-and-comms.test.ts, which exercise fireHeartbeat's real
+ * pauseAndPersist call site and would fail if this fix regressed it.
+ *
  * No live AgentDB/claims/agentbbs instance — mockBridge / a small stateful
  * mock, same as the rest of this suite.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mockBridge } from '../support/mock-bridge.js';
+import { credentialFor, nonceMockHandlers } from '../support/actor-credential-fixture.js';
 import {
   persistOrgMember,
   recallOrgMember,
   orgMemberKey,
   persistHeartbeatSchedule,
+  heartbeatKey,
   ApprovalGateViolationError,
 } from '../../src/control-plane/store/agentdb-adapter.js';
 import { registerCompanyCommsRoom } from '../../src/control-plane/comms/agentbbs-notification-channel.js';
 import type { OrgMember } from '../../src/control-plane/schema/org-member.js';
 import type { Issue } from '../../src/control-plane/schema/issue.js';
+import type { Goal } from '../../src/control-plane/schema/goal.js';
 import type { HeartbeatSchedule } from '../../src/control-plane/schema/heartbeat-schedule.js';
 
 const now = '2026-09-01T00:00:00.000Z';
@@ -208,5 +228,136 @@ test(
       !calls.some((c) => c.toolName === 'agentdb_hierarchical-store' || c.toolName === 'claims_list'),
       'a rejected genesis create must make no writes and no authorization calls',
     );
+  },
+);
+
+// --- Finding 3: an actor-initiated PAUSE had no authorization check at all ---
+
+function existingGoalSchedule(overrides: Partial<HeartbeatSchedule> = {}): HeartbeatSchedule {
+  return baseSchedule({ target: { kind: 'goal', goalId: 'goal-1' }, status: 'active', ...overrides });
+}
+
+function baseGoal(overrides: Partial<Goal> = {}): Goal {
+  return {
+    id: 'goal-1',
+    companyId: 'co-1',
+    description: 'Ship v1',
+    successCriteria: ['Users can sign up'],
+    status: 'active',
+    ownerId: null,
+    budgetAllocation: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+test(
+  'persistHeartbeatSchedule rejects an actor-initiated PAUSE (active -> paused) of an EXISTING schedule with ' +
+    'NO authorization and NO systemInitiated flag — the exploit confirmed against pre-fix code (reproduced in ' +
+    "this night's gist report): zero authorization needed to pause an active schedule",
+  async () => {
+    const existing = existingGoalSchedule();
+    const goal = baseGoal();
+    const key = heartbeatKey(existing.companyId, existing.target, existing.id);
+    const { calls, config } = mockBridge({
+      'agentdb_hierarchical-recall': (args) => {
+        if (args.query === key) return { results: [{ key, value: JSON.stringify(existing) }] };
+        if (args.query === 'ruclip:company:co-1:goal:goal-1') {
+          return { results: [{ key: args.query, value: JSON.stringify(goal) }] };
+        }
+        return { results: [] };
+      },
+      'agentdb_hierarchical-store': () => ({ success: true }),
+      'agentdb_causal-edge': () => ({ success: true }),
+      // Deliberately NO 'claims_list' handler — if any authorization check
+      // ran, the mock would throw. It never gets that far: the new pause
+      // gate rejects before resolveVerifiedActor is even called.
+    });
+
+    const attackerPause = { ...existing, status: 'paused' as const };
+    await assert.rejects(
+      () => persistHeartbeatSchedule(attackerPause, undefined, existing.status, config),
+      // Disambiguate from the (different) "goal does not exist" error path
+      // the same error class also covers elsewhere in this function — the
+      // goal mock above exists precisely so this rejection is unambiguously
+      // the new pause-authorization gate, not a missing-fixture artifact.
+      /Pausing HeartbeatSchedule 'hb-1' requires an acting OrgMember/,
+    );
+    assert.ok(
+      !calls.some((c) => c.toolName === 'agentdb_hierarchical-store'),
+      'a rejected pause must make no write',
+    );
+  },
+);
+
+test(
+  "persistHeartbeatSchedule's PAUSE gate does not block fireHeartbeat's own systemInitiated auto-pause " +
+    '(the one legitimate unauthenticated caller — see fire-heartbeat.ts pauseAndPersist)',
+  async () => {
+    const existing = existingGoalSchedule();
+    const goal = baseGoal();
+    const key = heartbeatKey(existing.companyId, existing.target, existing.id);
+    const { calls, config } = mockBridge({
+      'agentdb_hierarchical-recall': (args) => {
+        if (args.query === key) return { results: [{ key, value: JSON.stringify(existing) }] };
+        if (args.query === 'ruclip:company:co-1:goal:goal-1') {
+          return { results: [{ key: args.query, value: JSON.stringify(goal) }] };
+        }
+        return { results: [] };
+      },
+      'agentdb_hierarchical-store': () => ({ success: true }),
+      'agentdb_causal-edge': () => ({ success: true }),
+    });
+
+    const systemPause = { ...existing, status: 'paused' as const, lastOutcome: 'operating_budget_blocked' as const };
+    await assert.doesNotReject(() =>
+      persistHeartbeatSchedule(systemPause, undefined, existing.status, config, true),
+    );
+    assert.ok(calls.some((c) => c.toolName === 'agentdb_hierarchical-store'));
+  },
+);
+
+test(
+  'persistHeartbeatSchedule allows a PAUSE when real authorization + a held claim is supplied (legitimate ' +
+    'actor-initiated pause is not blocked by the fix, only the unauthenticated path is)',
+  async () => {
+    const actor: OrgMember = {
+      id: 'om-1',
+      companyId: 'co-1',
+      kind: 'agent',
+      identityRef: 'agent-team-name',
+      role: 'Engineer',
+      managerId: null,
+      status: 'active',
+    };
+    const issue = baseIssue();
+    const existing = baseSchedule({ status: 'active' });
+    const key = heartbeatKey(existing.companyId, existing.target, existing.id);
+    const { calls, config } = mockBridge({
+      'agentdb_hierarchical-recall': (args) => {
+        if (args.tier === 'working' && args.query === key) return { results: [{ key, value: JSON.stringify(existing) }] };
+        if (args.query === 'ruclip:company:co-1:goal:goal-1:issue:issue-1') {
+          return { results: [{ key: args.query, value: JSON.stringify(issue) }] };
+        }
+        if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1:org-member:om-1') {
+          return { results: [{ key: args.query, value: JSON.stringify(actor) }] };
+        }
+        return { results: [] };
+      },
+      'claims_list': () => ({
+        success: true,
+        claims: [{ issueId: 'co-1:issue-1', claimant: { type: 'agent', agentId: actor.id, agentType: actor.role }, status: 'active' }],
+      }),
+      'agentdb_hierarchical-store': () => ({ success: true }),
+      'agentdb_causal-edge': () => ({ success: true }),
+      ...nonceMockHandlers(),
+    });
+
+    const authorization = await credentialFor(actor);
+    const actorPause = { ...existing, status: 'paused' as const };
+    await assert.doesNotReject(() => persistHeartbeatSchedule(actorPause, authorization, existing.status, config));
+    assert.ok(calls.some((c) => c.toolName === 'claims_list'));
+    assert.ok(calls.some((c) => c.toolName === 'agentdb_hierarchical-store'));
   },
 );
