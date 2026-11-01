@@ -174,10 +174,6 @@ PR #51 over #29/#39/#100, given this measurement.
 
 **secrets** (this cycle's scan): clean — see Security Review above.
 
-## Witness
-
-(see dream-cycle report body / `docs/dream-cycle/2026-11-01-security-report.md` for the full stamped section)
-
 ## Recommendation / 3 next steps
 
 1. Human review: prioritize PR #51 (grpc-js) — the one open dependency-CVE
