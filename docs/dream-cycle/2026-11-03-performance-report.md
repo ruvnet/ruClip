@@ -185,5 +185,7 @@ Verifier procedure (reproducible by anyone from this committed file alone):
 ## Recommendation
 
 `evaluated: not attempted: no new non-duplicate, unilaterally-safe candidate
-found`. Human review of the existing backlog (#41, #94, #115 at minimum) is
-the recommended next action, not a new PR.
+found`. No new production-code PR opened tonight; [PR #117](https://github.com/ruvnet/ruClip/pull/117)
+carries only this report and the ledger row (no `src/` diff). Human review
+of the existing backlog (#41, #94, #115 at minimum) is the recommended next
+action, not a new candidate PR.
