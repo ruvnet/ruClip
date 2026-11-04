@@ -16,6 +16,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node scripts/run-tests.mjs dist",
     "lint": "echo \"no lint config yet — scaffold stage\" && exit 0",
+    "dream:contention": "npm run build && node scripts/dream-cycle-contention.mjs",
     "harness:score": "metaharness score . --json",
     "harness:genome": "metaharness genome . --json",
     "harness:mcp-scan": "harness mcp-scan --json",
