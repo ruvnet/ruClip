@@ -40,6 +40,7 @@ import type {
 import { assertValidEmployeeInteractionProfile } from '../schema/validation.js';
 import { AgentDbBridgeError, callTool, assertSafeId, type AgentDbAdapterConfig } from '../store/bridge-client.js';
 import { recallOrgMember, listApprovalTransitionsForCompany } from '../store/agentdb-adapter.js';
+import { resolveVerifiedActor, type ActorAuthorization } from '../authorization/actor-credential.js';
 
 export class PrivacyConsentError extends AgentDbBridgeError {
   constructor(message: string) {
@@ -162,36 +163,49 @@ function emptyProfile(companyId: string, orgMemberId: string, now: string): Empl
 }
 
 /**
- * NOT retrofitted to ActorCredential despite ACTOR-IDENTITY-VERIFICATION.md
- * §5 item 5 naming this function — found while implementing, flagged back
- * rather than silently applied or silently skipped. This function's own
- * kind !== 'human' rejection below means EmployeeInteractionProfile consent
- * applies ONLY to human OrgMembers, by design (EMPLOYEE-INTERACTION-PROFILE.md
- * §3). ACTOR-IDENTITY-VERIFICATION.md §4's locked decision blocks EVERY
- * `kind: 'human'` OrgMember from ever resolving a valid ActorCredential (no
- * human issuance path exists). Gating this function behind
- * `resolveVerifiedActor` would therefore make it permanently uncallable —
- * no human could ever set their own consent again, a direct regression of
- * already-shipped, already-tested functionality (Phase 6a), not a security
- * fix. Left as the pre-existing self-service `actor.id === orgMemberId`
- * check (already independently hardened — see this file's own history and
- * the access-control-gaps test file) until either real human credential
- * issuance ships (ACTOR-IDENTITY-VERIFICATION.md §4/Phase 2) or the
- * human-block decision is revisited to scope per-call-site rather than
- * blanket. See docs/PLAN.md §8 for the same finding recorded against
- * `mintHumanCommsAccess` (comms/agentbbs-notification-channel.ts) — the
- * root cause is identical in both places.
+ * RETROFITTED (dream-cycle correctness/security finding): this function was
+ * deliberately left on the pre-ActorCredential `actor: OrgMember` self-check
+ * — ACTOR-IDENTITY-VERIFICATION.md §6 and HUMAN-CREDENTIAL-ISSUANCE.md §5
+ * both named the reason explicitly: retrofitting it to require a credential
+ * that could never be issued for a `kind: 'human'` OrgMember (§4's original
+ * locked decision blocked every human unconditionally) would make the
+ * function permanently uncallable, a regression disguised as hardening. Both
+ * documents also named this as resolvable "the same way as the other three
+ * [retrofitted call sites]... as a genuine follow-up" once human issuance
+ * shipped — `mintHumanActorCredential` (`human-identity-attestation.ts`) has
+ * since shipped and is the ONLY code path that lifts `resolveVerifiedActor`'s
+ * block for a `kind: 'human'` actor, so that blocking precondition no longer
+ * holds. `employee-profile-access-control-gaps.test.ts`'s FINDING 2 — a
+ * caller constructing a bare `{id: <victim's id>}` object could grant/
+ * withdraw consent on the victim's behalf, since nothing verified the actor
+ * object was genuine — is closed by requiring a verified credential here too,
+ * same as the other four sites. Self-service human consent remains callable
+ * exactly as before, now via a credential minted through `ruclip login` /
+ * `mintHumanActorCredential` instead of a caller-trusted object.
  */
 export async function setInteractionProfileConsent(
   companyId: string,
   orgMemberId: string,
   signalTypes: InteractionSignalType[],
-  actor: OrgMember,
+  authorization: ActorAuthorization,
   config?: AgentDbAdapterConfig,
 ): Promise<EmployeeInteractionProfile> {
-  // First thing this function does, before any recall/write, per the
-  // design's own instruction — consent is self-service only, no
-  // proxy/admin/manager override.
+  const actor = await resolveVerifiedActor(authorization, config);
+  // Mirrors checkAuthorizationGuard's own security-hardening correction
+  // (agentdb-adapter.ts, security review round 7): the verified actor's
+  // companyId comes from the credential itself, not from this call's
+  // companyId argument — without this check a credential verified for a
+  // DIFFERENT company could still coincidentally satisfy the self-service
+  // check below if orgMemberId collides across companies.
+  if (actor.companyId !== companyId) {
+    throw new PrivacyConsentError(
+      `setInteractionProfileConsent: verified actor '${actor.id}' belongs to company '${actor.companyId}', not ` +
+        `'${companyId}'`,
+    );
+  }
+  // Consent is self-service only, no proxy/admin/manager override — actor is
+  // now the cryptographically-verified result above, not a caller-supplied
+  // object, so this check can no longer be satisfied by forging one.
   if (actor.id !== orgMemberId) {
     throw new PrivacyConsentError(
       `Consent for EmployeeInteractionProfile is self-service only — actor '${actor.id}' cannot set consent for ` +
