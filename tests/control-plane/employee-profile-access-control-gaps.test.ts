@@ -40,19 +40,22 @@
  * gone; test 2 proves the two designed read paths still return correct,
  * identical data.
  *
- * FINDING 2 (test 2 below), narrower but real: `setInteractionProfileConsent`'s
- * entire "self-service only" guarantee rests on comparing `actor.id` to
- * `orgMemberId` — two values the CALLER supplies. Nothing anywhere
- * verifies that `actor` genuinely represents the real, currently-acting
- * party (no live external check analogous to Guard C's
- * `verifyActorHoldsClaim`, which is unforgeable specifically because it
- * queries ruflo's own claims system rather than trusting a caller-supplied
- * object). A caller who knows another employee's `orgMemberId` (not
- * treated as a secret anywhere else in this schema — ids appear in issues,
- * assignments, comments) can construct an `OrgMember` object with
- * `id: <victim's id>` and grant or withdraw PII-adjacent consent on that
- * person's behalf, with the function believing it's self-service the whole
- * time.
+ * FINDING 2 (test 2 below), ORIGINALLY narrower but real, NOW FIXED
+ * (dream-cycle correctness/security retrofit): `setInteractionProfileConsent`'s
+ * entire "self-service only" guarantee used to rest on comparing `actor.id`
+ * to `orgMemberId` — two values the CALLER supplied directly on a plain
+ * `OrgMember` object, with nothing verifying that object genuinely
+ * represented the real, currently-acting party (no live external check
+ * analogous to Guard C's `verifyActorHoldsClaim`). A caller who knew another
+ * employee's `orgMemberId` (not treated as a secret anywhere else in this
+ * schema — ids appear in issues, assignments, comments) could construct an
+ * `OrgMember` object with `id: <victim's id>` and grant or withdraw
+ * PII-adjacent consent on that person's behalf. Test 2 below reproduces that
+ * exact exploit shape and proves it no longer works, now that
+ * `setInteractionProfileConsent` requires a verified `ActorAuthorization`
+ * (`resolveVerifiedActor`) instead of a bare object — see
+ * `interaction-profile.ts`'s own updated comment and
+ * `docs/dream-cycle/` for the dated finding this closes.
  *
  * No live AgentDB/memory instance — mockBridge, same as the rest of this
  * suite.
@@ -60,11 +63,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mockBridge } from '../support/mock-bridge.js';
+import { humanCredentialFor } from '../support/actor-credential-fixture.js';
 import * as agentDbAdapter from '../../src/control-plane/store/agentdb-adapter.js';
 import {
   recallOwnInteractionProfile,
   recallInteractionProfileForComposition,
   setInteractionProfileConsent,
+  PrivacyConsentError,
 } from '../../src/control-plane/employee-augmentation/interaction-profile.js';
 import type { EmployeeInteractionProfile } from '../../src/control-plane/schema/employee-interaction-profile.js';
 import type { OrgMember } from '../../src/control-plane/schema/org-member.js';
@@ -102,6 +107,32 @@ function baseProfile(overrides: Partial<EmployeeInteractionProfile> = {}): Emplo
 const profileKey = (companyId: string, orgMemberId: string) =>
   `ruclip:company:${companyId}:org-member:${orgMemberId}:interaction-profile`;
 const orgMemberRecallKey = (companyId: string, orgMemberId: string) => `ruclip:company:${companyId}:org-member:${orgMemberId}`;
+
+/**
+ * Namespace-scoped in-memory store — the retrofitted
+ * `setInteractionProfileConsent` now goes through `resolveVerifiedActor`
+ * (ActorCredential nonce guard, HumanIdentityAttestation nonce guard, the
+ * human-attestation provenance marker) in addition to its own
+ * EmployeeInteractionProfile read/write, each in its own real namespace.
+ * Mirrors `employee-interaction-profile.test.ts`'s own `statefulStore`.
+ */
+function statefulStore(seed?: Record<string, unknown>) {
+  const store = new Map<string, unknown>(Object.entries(seed ?? {}));
+  return {
+    memory_retrieve: (args: Record<string, unknown>) => {
+      const key = `${args.namespace}:${args.key}`;
+      return store.has(key) ? { found: true, value: store.get(key) } : { found: false };
+    },
+    memory_store: (args: Record<string, unknown>) => {
+      const key = `${args.namespace}:${args.key}`;
+      if (args.upsert === false && store.has(key)) {
+        return { success: false, error: 'UNIQUE constraint failed: memory_entries.namespace, memory_entries.key' };
+      }
+      store.set(key, typeof args.value === 'string' ? JSON.parse(args.value) : args.value);
+      return { success: true };
+    },
+  };
+}
 
 // --- Finding 1: recallInteractionProfile is an unrestricted third read path ---
 
@@ -142,42 +173,42 @@ test(
 // --- Finding 2: setInteractionProfileConsent's self-check trusts a caller-constructed actor object ---
 
 test(
-  'FINDING: setInteractionProfileConsent grants/withdraws consent on a real OrgMember\'s behalf when the ' +
-    'caller constructs a forged actor object with id === the victim\'s orgMemberId — nothing verifies actor ' +
-    'genuinely represents the real, currently-acting party (no live/external check, unlike Guard C\'s ' +
-    'verifyActorHoldsClaim elsewhere in this codebase)',
+  'FIXED: setInteractionProfileConsent no longer grants/withdraws consent on a victim\'s behalf for an attacker ' +
+    'holding only their OWN valid, verified credential — the old forgery (a caller-constructed actor object ' +
+    'with id === the victim\'s orgMemberId) is no longer even expressible: the function now requires a real ' +
+    'ActorAuthorization, and there is no way to make a credential say "victim-om" without it actually having ' +
+    'been minted for victim-om (resolveVerifiedActor replaces the old caller-trusted object)',
   async () => {
     const realVictim = baseOrgMember({ id: 'victim-om', identityRef: 'bbs:victim', role: 'Engineer' });
-    const stored: { profile: EmployeeInteractionProfile | null } = { profile: null };
-    const { config } = mockBridge({
-      'agentdb_hierarchical-recall': (args) =>
-        args.query === orgMemberRecallKey('co-1', 'victim-om')
-          ? { results: [{ key: orgMemberRecallKey('co-1', 'victim-om'), value: JSON.stringify(realVictim) }] }
-          : { results: [] },
-      'memory_retrieve': () => (stored.profile ? { found: true, value: stored.profile } : { found: false }),
-      'memory_store': (args) => {
-        stored.profile = JSON.parse(args.value as string) as EmployeeInteractionProfile;
-        return { success: true };
+    const attacker = baseOrgMember({ id: 'attacker-om', identityRef: 'bbs:attacker', role: 'Engineer' });
+    const { calls, config } = mockBridge({
+      'agentdb_hierarchical-recall': (args) => {
+        if (args.query === orgMemberRecallKey('co-1', 'victim-om')) {
+          return { results: [{ key: args.query, value: JSON.stringify(realVictim) }] };
+        }
+        if (args.query === orgMemberRecallKey('co-1', 'attacker-om')) {
+          return { results: [{ key: args.query, value: JSON.stringify(attacker) }] };
+        }
+        return { results: [] };
       },
+      ...statefulStore(),
     });
 
-    // The attacker doesn't need any real credential for 'victim-om' — just
-    // its id, which is not a secret anywhere else in this schema (it shows
-    // up in Issue.assigneeId, Comment.authorId, ApprovalTransition.actorId,
-    // causal edges, etc). Every OTHER field is fabricated freely.
-    const forgedActor: OrgMember = {
-      id: 'victim-om', // <- the only field that matters to the self-check
-      companyId: 'co-1',
-      kind: 'human',
-      identityRef: 'bbs:attacker-controlled-value',
-      role: 'attacker-controlled-role',
-      managerId: null,
-      status: 'active',
-    };
+    // The attacker has a REAL, validly-signed, properly human-attested
+    // credential — but for their OWN orgMemberId. Unlike the old attack
+    // (just set id: 'victim-om' on a plain object, and the id — not a
+    // secret anywhere else in this schema — was all that mattered), there
+    // is no way to make this credential assert "victim-om" without it
+    // genuinely having been minted for victim-om.
+    const attackerAuthorization = await humanCredentialFor(attacker, config);
 
-    const result = await setInteractionProfileConsent('co-1', 'victim-om', ['internal-timing'], forgedActor, config);
-    assert.deepEqual(result.consentedSignalTypes, ['internal-timing']);
-    assert.ok(stored.profile, 'consent was actually persisted for the real victim OrgMember');
-    assert.equal(stored.profile!.orgMemberId, 'victim-om');
+    await assert.rejects(
+      () => setInteractionProfileConsent('co-1', 'victim-om', ['internal-timing'], attackerAuthorization, config),
+      PrivacyConsentError,
+    );
+    assert.ok(
+      !calls.some((c) => c.toolName === 'memory_store' && c.args.namespace === 'ruclip-employee-profiles'),
+      'no consent was ever persisted for the real victim OrgMember',
+    );
   },
 );

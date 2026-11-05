@@ -13,7 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mockBridge } from '../support/mock-bridge.js';
-import { credentialFor, nonceMockHandlers } from '../support/actor-credential-fixture.js';
+import { credentialFor, humanCredentialFor, nonceMockHandlers } from '../support/actor-credential-fixture.js';
 import { applyApprovalTransition } from '../../src/control-plane/store/agentdb-adapter.js';
 import {
   recallOwnInteractionProfile,
@@ -104,26 +104,73 @@ function activeClaimFor(actor: OrgMember, issueId: string) {
 const orgMemberRecallKey = (companyId: string, orgMemberId: string) => `ruclip:company:${companyId}:org-member:${orgMemberId}`;
 const profileKey = (companyId: string, orgMemberId: string) => `ruclip:company:${companyId}:org-member:${orgMemberId}:interaction-profile`;
 
+/**
+ * Namespace-scoped in-memory store backing `memory_retrieve`/`memory_store`
+ * for every namespace `setInteractionProfileConsent`'s retrofit now touches
+ * in one call — the EmployeeInteractionProfile itself, the ActorCredential
+ * nonce guard, the HumanIdentityAttestation nonce guard, and the human-
+ * attestation provenance marker — each keyed by its own real namespace, so
+ * one store correctly serves all of them rather than one handler guessing
+ * which namespace a given call belongs to. Mirrors
+ * `autogenous-runaway-trigger-gap.test.ts`'s own `statefulNamespaceStore`
+ * pattern. `seed` pre-populates entries (e.g. an already-existing profile)
+ * before the call under test runs.
+ */
+function statefulStore(seed?: Record<string, unknown>) {
+  const store = new Map<string, unknown>(Object.entries(seed ?? {}));
+  return {
+    memory_retrieve: (args: Record<string, unknown>) => {
+      const key = `${args.namespace}:${args.key}`;
+      return store.has(key) ? { found: true, value: store.get(key) } : { found: false };
+    },
+    memory_store: (args: Record<string, unknown>) => {
+      const key = `${args.namespace}:${args.key}`;
+      if (args.upsert === false && store.has(key)) {
+        return { success: false, error: 'UNIQUE constraint failed: memory_entries.namespace, memory_entries.key' };
+      }
+      store.set(key, typeof args.value === 'string' ? JSON.parse(args.value) : args.value);
+      return { success: true };
+    },
+  };
+}
+
 // --- §3: consent — self-service, fail-closed, per signal type ---------------
 
 test('setInteractionProfileConsent rejects when actor.id !== orgMemberId (self-service only, no proxy/admin override)', async () => {
-  const { calls, config } = mockBridge({});
   const actor = baseActor({ id: 'om-other' });
+  const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': (args) =>
+      args.query === orgMemberRecallKey('co-1', 'om-other')
+        ? { results: [{ key: args.query, value: JSON.stringify(actor) }] }
+        : { results: [] },
+    ...statefulStore(),
+  });
+  const authorization = await humanCredentialFor(actor, config);
   await assert.rejects(
-    () => setInteractionProfileConsent('co-1', 'om-1', ['internal-timing'], actor, config),
+    () => setInteractionProfileConsent('co-1', 'om-1', ['internal-timing'], authorization, config),
     PrivacyConsentError,
   );
-  assert.equal(calls.length, 0, 'rejected before any bridge call');
+  assert.ok(
+    !calls.some((c) => c.toolName === 'memory_store' && c.args.namespace === 'ruclip-employee-profiles'),
+    'rejected before any EmployeeInteractionProfile write',
+  );
 });
 
 test('setInteractionProfileConsent rejects a kind:"agent" actor consenting on a human OrgMember\'s behalf', async () => {
-  const { calls, config } = mockBridge({});
   const agentActor = baseActor({ id: 'agent-1', kind: 'agent' });
+  const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': (args) =>
+      args.query === orgMemberRecallKey('co-1', 'agent-1')
+        ? { results: [{ key: args.query, value: JSON.stringify(agentActor) }] }
+        : { results: [] },
+    ...statefulStore(),
+  });
+  const authorization = await credentialFor(agentActor);
   await assert.rejects(
-    () => setInteractionProfileConsent('co-1', 'om-1', ['internal-timing'], agentActor, config),
+    () => setInteractionProfileConsent('co-1', 'om-1', ['internal-timing'], authorization, config),
     PrivacyConsentError,
   );
-  assert.equal(calls.length, 0);
+  assert.ok(!calls.some((c) => c.toolName === 'memory_store' && c.args.namespace === 'ruclip-employee-profiles'));
 });
 
 test('setInteractionProfileConsent rejects when the target OrgMember has kind !== "human" (even for a self-consistent actor.id === orgMemberId call)', async () => {
@@ -133,9 +180,11 @@ test('setInteractionProfileConsent rejects when the target OrgMember has kind !=
       args.query === orgMemberRecallKey('co-1', 'agent-1')
         ? { results: [{ key: args.query, value: JSON.stringify(agentMember) }] }
         : { results: [] },
+    ...statefulStore(),
   });
+  const authorization = await credentialFor(agentMember);
   await assert.rejects(
-    () => setInteractionProfileConsent('co-1', 'agent-1', ['internal-timing'], agentMember, config),
+    () => setInteractionProfileConsent('co-1', 'agent-1', ['internal-timing'], authorization, config),
     PrivacyConsentError,
   );
 });
@@ -147,16 +196,16 @@ test('setInteractionProfileConsent creates a fresh profile with zero defaults on
       args.query === orgMemberRecallKey('co-1', 'om-1')
         ? { results: [{ key: args.query, value: JSON.stringify(humanMember) }] }
         : { results: [] },
-    'memory_retrieve': () => ({ found: false }),
-    'memory_store': () => ({ success: true }),
+    ...statefulStore(),
   });
-  const profile = await setInteractionProfileConsent('co-1', 'om-1', ['internal-timing'], humanMember, config);
+  const authorization = await humanCredentialFor(humanMember, config);
+  const profile = await setInteractionProfileConsent('co-1', 'om-1', ['internal-timing'], authorization, config);
   assert.deepEqual(profile.consentedSignalTypes, ['internal-timing']);
   assert.equal(profile.sampleCount, 0);
   assert.equal(profile.medianDecisionLatencySeconds, null);
   assert.equal(profile.decisionHourHistogram.length, 24);
 
-  const storeCall = calls.find((c) => c.toolName === 'memory_store');
+  const storeCall = calls.find((c) => c.toolName === 'memory_store' && c.args.namespace === 'ruclip-employee-profiles');
   assert.equal(storeCall?.args.key, profileKey('co-1', 'om-1'));
   assert.equal(storeCall?.args.namespace, 'ruclip-employee-profiles');
   assert.equal(storeCall?.args.provenance_type, 'system_observation');
@@ -171,14 +220,14 @@ test('setInteractionProfileConsent replaces (not merges) consentedSignalTypes �
       args.query === orgMemberRecallKey('co-1', 'om-1')
         ? { results: [{ key: args.query, value: JSON.stringify(humanMember) }] }
         : { results: [] },
-    'memory_retrieve': () => ({ found: true, value: existing }),
-    'memory_store': () => ({ success: true }),
+    ...statefulStore({ [`ruclip-employee-profiles:${profileKey('co-1', 'om-1')}`]: existing }),
   });
-  const profile = await setInteractionProfileConsent('co-1', 'om-1', [], humanMember, config);
+  const authorization = await humanCredentialFor(humanMember, config);
+  const profile = await setInteractionProfileConsent('co-1', 'om-1', [], authorization, config);
   assert.deepEqual(profile.consentedSignalTypes, []);
   // Withdrawing consent does not retroactively delete already-aggregated values (§3).
   assert.equal(profile.sampleCount, 5);
-  assert.ok(calls.some((c) => c.toolName === 'memory_store'));
+  assert.ok(calls.some((c) => c.toolName === 'memory_store' && c.args.namespace === 'ruclip-employee-profiles'));
 });
 
 // --- §4: no computation for an unconsented signal type -----------------------
