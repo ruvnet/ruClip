@@ -881,7 +881,19 @@ export async function applyApprovalTransition(
     if (!deps.approver) {
       throw new ClaimAuthorizationError(`applyApprovalTransition: action 'submit' requires deps.approver`);
     }
-    await handoffClaim(issue.id, actor, deps.approver, { reason: deps.reason, progress: 100 }, config);
+    // deps.approver is caller-constructed, unlike `actor` (verified above via
+    // resolveVerifiedActor + Guard C's recallOrgMember re-check) — recall the
+    // persisted record and hand off to THAT, not the caller-supplied object,
+    // so an id with no real OrgMember (or a role/kind the caller fabricated)
+    // can't be handed a claim nobody can ever accept.
+    const persistedApprover = await recallOrgMember(companyId, deps.approver.id, config);
+    if (!persistedApprover) {
+      throw new ClaimAuthorizationError(
+        `applyApprovalTransition: deps.approver '${deps.approver.id}' has no persisted OrgMember record in ` +
+          `company '${companyId}' — an unknown approver cannot receive a claim handoff`,
+      );
+    }
+    await handoffClaim(issue.id, actor, persistedApprover, { reason: deps.reason, progress: 100 }, config);
   }
 
   const { nextIssue, transition } = transitionApprovalState(issue, action, actor, previousTransition, {
@@ -956,7 +968,17 @@ export async function applyApprovalTransition(
     if (!deps.handoffTo) {
       throw new ClaimAuthorizationError(`applyApprovalTransition: action 'reject' requires deps.handoffTo`);
     }
-    await handoffClaim(issue.id, actor, deps.handoffTo, { reason: 'returned for revision' }, config);
+    // Same recall-and-verify treatment as the submit/approver path above —
+    // deps.handoffTo is caller-constructed and was never checked against
+    // persisted state.
+    const persistedHandoffTo = await recallOrgMember(companyId, deps.handoffTo.id, config);
+    if (!persistedHandoffTo) {
+      throw new ClaimAuthorizationError(
+        `applyApprovalTransition: deps.handoffTo '${deps.handoffTo.id}' has no persisted OrgMember record in ` +
+          `company '${companyId}' — an unknown handoff target cannot receive a claim handoff`,
+      );
+    }
+    await handoffClaim(issue.id, actor, persistedHandoffTo, { reason: 'returned for revision' }, config);
   }
 
   return { issue: nextIssue, transition };
