@@ -287,6 +287,9 @@ test('applyApprovalTransition with deps.interactionLearning omitted never touche
       if (args.tier === 'semantic' && args.query === orgMemberRecallKey('co-1', 'om-submitter')) {
         return { results: [{ key: args.query, value: JSON.stringify(actor) }] };
       }
+      if (args.tier === 'semantic' && args.query === orgMemberRecallKey('co-1', 'om-approver')) {
+        return { results: [{ key: args.query, value: JSON.stringify(approver) }] };
+      }
       return { results: [] };
     },
     'agentdb_hierarchical-store': () => ({ success: true }),

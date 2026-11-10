@@ -378,7 +378,7 @@ test('applyApprovalTransition (submit, no witness): persists the transition, upd
   const actor = baseActor({ id: 'om-submitter' });
   const approver = baseActor({ id: 'om-approver' });
   const { calls, config } = mockBridge({
-    'agentdb_hierarchical-recall': recallReturning(original, actor),
+    'agentdb_hierarchical-recall': recallReturning(original, actor, approver),
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_causal-edge': () => ({ success: true }),
     'claims_handoff': () => ({ success: true }),
@@ -494,7 +494,7 @@ test('applyApprovalTransition (reject): records a rejected_by edge, not approved
   const pendingIssue = baseIssue({ approvalState: 'pending', approvalTransitionRef: 'transition-submit' });
   const approver = baseActor({ id: 'om-approver' });
   const { calls, config } = mockBridge({
-    'agentdb_hierarchical-recall': recallReturning(pendingIssue, approver),
+    'agentdb_hierarchical-recall': recallReturning(pendingIssue, approver, submitter),
     'agentdb_hierarchical-store': () => ({ success: true }),
     'agentdb_causal-edge': () => ({ success: true }),
     'claims_accept-handoff': () => ({ success: true }),

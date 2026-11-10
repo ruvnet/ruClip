@@ -761,6 +761,9 @@ test('applyApprovalTransition publishes issue-approval-transition after a legal 
       if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1:org-member:om-submitter') {
         return { results: [{ key: args.query, value: JSON.stringify(actor) }] };
       }
+      if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1:org-member:om-approver') {
+        return { results: [{ key: args.query, value: JSON.stringify(approver) }] };
+      }
       return { results: [] };
     },
     'agentdb_hierarchical-store': () => ({ success: true }),
@@ -811,6 +814,9 @@ test('applyApprovalTransition succeeds even when deps.notifications.publish reje
       }
       if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1:org-member:om-submitter') {
         return { results: [{ key: args.query, value: JSON.stringify(actor) }] };
+      }
+      if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1:org-member:om-approver') {
+        return { results: [{ key: args.query, value: JSON.stringify(approver) }] };
       }
       return { results: [] };
     },

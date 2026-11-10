@@ -231,10 +231,16 @@ test(
     const actor = baseActor({ id: 'om-submitter' });
     const approver = baseActor({ id: 'om-approver' });
     const { calls, config } = mockBridge({
-      'agentdb_hierarchical-recall': (args) =>
-        args.tier === 'semantic' && args.query === 'ruclip:company:co-1:org-member:om-submitter'
-          ? { results: [{ key: args.query, value: JSON.stringify(actor) }] }
-          : { results: [] },
+      'agentdb_hierarchical-recall': (args) => {
+        if (args.tier !== 'semantic') return { results: [] };
+        if (args.query === 'ruclip:company:co-1:org-member:om-submitter') {
+          return { results: [{ key: args.query, value: JSON.stringify(actor) }] };
+        }
+        if (args.query === 'ruclip:company:co-1:org-member:om-approver') {
+          return { results: [{ key: args.query, value: JSON.stringify(approver) }] };
+        }
+        return { results: [] };
+      },
       'agentdb_hierarchical-store': () => ({ success: true }),
       'agentdb_causal-edge': () => ({ success: true }),
       'claims_handoff': () => ({ success: true }),
@@ -252,9 +258,10 @@ test(
     );
     assert.deepEqual(
       calls.map((c) => c.toolName),
-      ['memory_store', 'agentdb_hierarchical-recall', 'claims_handoff'],
-      'credential verification (nonce check/consume + recallOrgMember) and the pre-transition claims_handoff both ' +
-        'run, but no store/delete/causal-edge write should happen once the witness hook rejects',
+      ['memory_store', 'agentdb_hierarchical-recall', 'agentdb_hierarchical-recall', 'claims_handoff'],
+      'credential verification (nonce check/consume + recallOrgMember), the new deps.approver existence recall, ' +
+        'and the pre-transition claims_handoff all run, but no store/delete/causal-edge write should happen once ' +
+        'the witness hook rejects',
     );
   },
 );
