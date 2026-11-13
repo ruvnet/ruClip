@@ -19,6 +19,8 @@ import { mockBridge } from '../support/mock-bridge.js';
 import { credentialFor, nonceMockHandlers } from '../support/actor-credential-fixture.js';
 import {
   heartbeatKey,
+  issueKey,
+  goalKey,
   persistHeartbeatSchedule,
   recallHeartbeatSchedule,
   listDueHeartbeats,
@@ -585,6 +587,120 @@ test('fireHeartbeat publishes heartbeat-fired and advances nextFireAt by cadence
   assert.ok(new Date(result.schedule.nextFireAt).getTime() >= before + 600_000);
   assert.equal(published.length, 1);
   assert.equal(published[0]?.kind, 'heartbeat-fired');
+});
+
+// --- fireHeartbeat: no redundant re-fetch of the already-recalled target -----
+//
+// Gate 1 (above) already recalls the issue/goal to evaluate budgetImpact.
+// persistHeartbeatSchedule separately re-validates the target exists before
+// writing — but it used to always do that with its OWN recallIssue/recallGoal
+// round trip, even on this success path, where fireHeartbeat already holds a
+// proven-non-null copy of the exact same entity moments earlier. These tests
+// count the real `agentdb_hierarchical-recall` calls for that exact key
+// across one full `fireHeartbeat` call and assert exactly one, not two.
+
+test('fireHeartbeat (issue target, success path) recalls the target issue exactly once, not re-fetched by persistHeartbeatSchedule', async () => {
+  const company = baseCompany();
+  const issue = baseIssue({ budgetImpact: 0 });
+  const schedule = baseSchedule();
+  const scheduleKeyStr = heartbeatKey(schedule.companyId, schedule.target, schedule.id);
+  const issueKeyStr = issueKey(schedule.companyId, 'goal-1', 'issue-1');
+  const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': (args) => {
+      if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1') {
+        return { results: [{ key: args.query, value: JSON.stringify(company) }] };
+      }
+      if (args.tier === 'working' && args.query === issueKeyStr) {
+        return { results: [{ key: args.query, value: JSON.stringify(issue) }] };
+      }
+      if (args.tier === 'working' && args.query === scheduleKeyStr) {
+        return { results: [{ key: scheduleKeyStr, value: JSON.stringify(schedule) }] };
+      }
+      return { results: [] };
+    },
+    'agentdb_hierarchical-store': () => ({ success: true }),
+    'agentdb_causal-edge': () => ({ success: true }),
+    'memory_retrieve': () => ({ found: false }),
+  });
+  const result = await fireHeartbeat(schedule, {}, config);
+  assert.equal(result.outcome, 'ok');
+  const issueRecallCalls = calls.filter(
+    (c) => c.toolName === 'agentdb_hierarchical-recall' && c.args.tier === 'working' && c.args.query === issueKeyStr,
+  );
+  assert.equal(issueRecallCalls.length, 1, `expected exactly 1 recall of ${issueKeyStr}, observed ${issueRecallCalls.length}`);
+});
+
+test('fireHeartbeat (goal target, success path) recalls the target goal exactly once, not re-fetched by persistHeartbeatSchedule', async () => {
+  const company = baseCompany();
+  const goal = baseGoal({ budgetAllocation: null });
+  const schedule = baseSchedule({ target: { kind: 'goal', goalId: 'goal-1' } });
+  const scheduleKeyStr = heartbeatKey(schedule.companyId, schedule.target, schedule.id);
+  const goalKeyStr = goalKey(schedule.companyId, 'goal-1');
+  const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': (args) => {
+      if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1') {
+        return { results: [{ key: args.query, value: JSON.stringify(company) }] };
+      }
+      if (args.tier === 'semantic' && args.query === goalKeyStr) {
+        return { results: [{ key: args.query, value: JSON.stringify(goal) }] };
+      }
+      if (args.tier === 'working' && args.query === scheduleKeyStr) {
+        return { results: [{ key: scheduleKeyStr, value: JSON.stringify(schedule) }] };
+      }
+      return { results: [] };
+    },
+    'agentdb_hierarchical-store': () => ({ success: true }),
+    'agentdb_causal-edge': () => ({ success: true }),
+    'memory_retrieve': () => ({ found: false }),
+  });
+  const result = await fireHeartbeat(schedule, {}, config);
+  assert.equal(result.outcome, 'ok');
+  const goalRecallCalls = calls.filter(
+    (c) => c.toolName === 'agentdb_hierarchical-recall' && c.args.tier === 'semantic' && c.args.query === goalKeyStr,
+  );
+  assert.equal(goalRecallCalls.length, 1, `expected exactly 1 recall of ${goalKeyStr}, observed ${goalRecallCalls.length}`);
+});
+
+test('fireHeartbeat Gate 2 HARD_STOP pause path also reuses Gate 1\'s already-recalled issue (no re-fetch)', async () => {
+  const company = baseCompany();
+  const issue = baseIssue({ budgetImpact: 0 });
+  const schedule = baseSchedule();
+  const scheduleKeyStr = heartbeatKey(schedule.companyId, schedule.target, schedule.id);
+  const issueKeyStr = issueKey(schedule.companyId, 'goal-1', 'issue-1');
+  const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': (args) => {
+      if (args.tier === 'semantic' && args.query === 'ruclip:company:co-1') {
+        return { results: [{ key: args.query, value: JSON.stringify(company) }] };
+      }
+      if (args.tier === 'working' && args.query === issueKeyStr) {
+        return { results: [{ key: args.query, value: JSON.stringify(issue) }] };
+      }
+      // persistHeartbeatSchedule's own create-path authorization check needs
+      // to see this schedule as ALREADY existing (fireHeartbeat's pause here
+      // is a legitimate no-actor re-persist of an existing schedule, same as
+      // the Gate 1 pause tests above).
+      if (args.tier === 'working' && args.query === scheduleKeyStr) {
+        return { results: [{ key: scheduleKeyStr, value: JSON.stringify(schedule) }] };
+      }
+      return { results: [] };
+    },
+    'agentdb_hierarchical-store': () => ({ success: true }),
+    'agentdb_causal-edge': () => ({ success: true }),
+    'memory_retrieve': (args) => {
+      if (args.key === 'co-1:budget-config') {
+        return { found: true, value: { budgetUsd: 10, thresholds: { info: 0.5, warning: 0.75, critical: 0.9, hardStop: 1.0 } } };
+      }
+      if (args.key === 'co-1:session-a') return { found: true, value: { total_cost_usd: 999 } };
+      return { found: false };
+    },
+    'memory_list': () => ({ entries: [{ key: 'co-1:session-a' }] }),
+  });
+  const result = await fireHeartbeat(schedule, {}, config);
+  assert.equal(result.outcome, 'operating_budget_blocked');
+  const issueRecallCalls = calls.filter(
+    (c) => c.toolName === 'agentdb_hierarchical-recall' && c.args.tier === 'working' && c.args.query === issueKeyStr,
+  );
+  assert.equal(issueRecallCalls.length, 1, `expected exactly 1 recall of ${issueKeyStr}, observed ${issueRecallCalls.length}`);
 });
 
 test('fireHeartbeat never throws or blocks the domain write when the notifications channel is degraded/rejects', async () => {
