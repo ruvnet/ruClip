@@ -1050,11 +1050,24 @@ function tierForHeartbeatStatus(status: HeartbeatStatus): MemoryTier {
  * nothing downstream re-verifies the same credential), so no
  * nonce-double-consumption concern applies here.
  */
+/**
+ * Caller-supplied target entity, when the caller has already recalled it for
+ * its own gating logic (e.g. `fireHeartbeat`'s budget gates) and knows it to
+ * be non-null for this exact `schedule.target` — lets `persistHeartbeatSchedule`
+ * skip its own `recallIssue`/`recallGoal` round trip and validate against the
+ * already-fetched object instead. Optional and narrowly typed by `kind` so a
+ * mismatched (issue target / goal entity) pairing is a compile error, not a
+ * runtime one. Every existing caller that omits it gets the prior
+ * fetch-and-validate behavior unchanged.
+ */
+export type PrefetchedHeartbeatTarget = { kind: 'issue'; issue: Issue } | { kind: 'goal'; goal: Goal };
+
 export async function persistHeartbeatSchedule(
   schedule: HeartbeatSchedule,
   authorization?: ActorAuthorization,
   previousStatus?: HeartbeatStatus,
   config?: AgentDbAdapterConfig,
+  prefetchedTarget?: PrefetchedHeartbeatTarget,
 ): Promise<void> {
   assertValidHeartbeatSchedule(schedule);
 
@@ -1099,7 +1112,10 @@ export async function persistHeartbeatSchedule(
 
   let targetNodeId: string;
   if (schedule.target.kind === 'issue') {
-    const issue = await recallIssue(schedule.companyId, schedule.target.goalId, schedule.target.issueId, config);
+    const issue =
+      prefetchedTarget?.kind === 'issue'
+        ? prefetchedTarget.issue
+        : await recallIssue(schedule.companyId, schedule.target.goalId, schedule.target.issueId, config);
     if (!issue) {
       throw new ApprovalGateViolationError(
         `HeartbeatSchedule '${schedule.id}' targets issue '${schedule.target.issueId}' which does not exist`,
@@ -1116,7 +1132,10 @@ export async function persistHeartbeatSchedule(
     }
     targetNodeId = entityNodeId('issue', schedule.target.issueId);
   } else {
-    const goal = await recallGoal(schedule.companyId, schedule.target.goalId, config);
+    const goal =
+      prefetchedTarget?.kind === 'goal'
+        ? prefetchedTarget.goal
+        : await recallGoal(schedule.companyId, schedule.target.goalId, config);
     if (!goal) {
       throw new ApprovalGateViolationError(
         `HeartbeatSchedule '${schedule.id}' targets goal '${schedule.target.goalId}' which does not exist`,
