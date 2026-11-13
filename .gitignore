@@ -8,3 +8,5 @@ dist/
 .ruflo/
 .ruvector/
 ruvector.db
+.claude-flow/
+.swarm/
