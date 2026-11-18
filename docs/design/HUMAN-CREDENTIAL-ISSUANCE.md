@@ -249,3 +249,59 @@ own §6, since none of it was this slice's job):
   relationships (this is intentionally NOT prescribed here, mirroring how
   ruClip does not prescribe which GCP project holds its own issuer secret
   either).
+
+## 6. Version 2: audience and purpose binding
+
+A version 1 attestation names a human and a company, but not *which
+verifier* it is for or *which action* it authorises. Two consequences:
+
+- An attester that serves several verifiers (for example, one ruPro BFF
+  serving many per-tenant runtimes) produces attestations that verify on
+  every runtime that admits its key. Single-use nonces stop a second use on
+  the same nonce store, not a first use on a different one.
+- One attestation can mint a credential that is then spent on any
+  transition, so the human's confirmation is not bound to what they saw.
+
+Version 2 adds three signed fields, all opt-in:
+
+| Field | Meaning | Checked by ruClip |
+|---|---|---|
+| `version: 2` | marks the frame as v2 | yes; any other value except absent is refused |
+| `audience` | the verifier this is for (≤256 chars) | equality with `expectedAudience`, when the caller passes one |
+| `purpose` | `{action, subjectRef, subjectVersion, payloadDigest}` | shape always; equality, field by field, with `expectedPurpose` when passed |
+| `assurance` | `{orgRole?, tier?, surface?}` attester-side facts | shape only; recorded, never a gate |
+
+Rules:
+
+1. **v1 frames are byte-identical to before.** The v2 fields and the
+   capability change appear in the frame only when `version === 2`, so
+   existing attesters (including `services/ruclip-attester`) keep verifying
+   unchanged, and `verifyHumanIdentityAttestation` returns the same shape
+   for them.
+2. **Distinct capability.** v2 frames sign with
+   `capabilityUsed: 'ruclip.human-identity-attestation.v2'`. A v2 signature
+   presented with its v2 fields stripped fails as a v1 frame, so a
+   downgrade is detected.
+3. **No unsigned v2 fields.** A v1 attestation carrying `audience`,
+   `purpose` or `assurance` is refused, because those fields would sit
+   outside the signature and could mislead a caller that reads them.
+4. **Expectations before I/O.** Version, audience and purpose checks run
+   before signature verification and before the nonce is consumed. A
+   mis-addressed attestation is refused with a precise reason and leaves
+   the nonce unspent.
+5. **Opt-in strictness.** `AttestationVerifyOptions` (`expectedAudience`,
+   `expectedPurpose`, `requireVersion2`) is optional on
+   `verifyHumanIdentityAttestation` and `mintHumanActorCredential`. Passing
+   any of them makes a v1 attestation unacceptable. Callers that pass none
+   behave exactly as before.
+6. **What stays the caller's job.** ruClip compares `purpose` with what the
+   caller expects; it does not know what an action means. The caller
+   (for ruPro, the sidecar) derives `expectedPurpose` from the action it is
+   about to apply, including the subject's current version and the digest
+   of the summary it showed the human.
+
+Tests: `tests/control-plane/human-identity-attestation-v2.test.ts`
+(tampering every signed v2 field, audience and purpose mismatch, v1 refused
+under each option, unsigned v2 fields on v1, unsupported version, malformed
+fields, nonce reuse, unadmitted key, identity binding, v1 frame
+byte-identity, and downgrade).

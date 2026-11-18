@@ -16,6 +16,8 @@ import {
   attestationFrame,
   mintHumanActorCredential,
   resolveAdmittedAttesterKeys,
+  type AttestationAssurance,
+  type AttestationPurpose,
   type HumanIdentityAttestation,
 } from '../../src/control-plane/authorization/human-identity-attestation.js';
 import type { OrgMember } from '../../src/control-plane/schema/org-member.js';
@@ -97,6 +99,37 @@ export async function humanAttestationFor(
   const humanIdentityRef = opts?.humanIdentityRef ?? member.identityRef;
 
   const unsignedFields = { orgMemberId: member.id, companyId: member.companyId, humanIdentityRef, issuedAt, expiresAt, nonce };
+  const signingBytes = canonicalBytes({ ...attestationFrame(unsignedFields), signature: '' });
+  const signature = edSign(null, signingBytes, privateKey).toString('hex');
+  return { ...unsignedFields, signature, attesterPublicKeyDerHex: attesterKeyDerHex };
+}
+
+/**
+ * A real, signed version 2 attestation (audience + purpose + assurance) for
+ * `member`. Tests tamper with the returned object to check the signature.
+ */
+export async function humanAttestationV2For(
+  member: Pick<OrgMember, 'id' | 'companyId' | 'identityRef'>,
+  v2: { audience: string; purpose: AttestationPurpose; assurance?: AttestationAssurance },
+  opts?: { ttlSeconds?: number; attesterPrivateKeyPem?: string },
+): Promise<HumanIdentityAttestation> {
+  const privateKey = createPrivateKey(opts?.attesterPrivateKeyPem ?? TEST_ATTESTER_PRIVATE_KEY_PEM);
+  const attesterKeyDerHex = createPublicKey(privateKey).export({ type: 'spki', format: 'der' }).toString('hex');
+  const canonicalBytes = await loadCanonicalBytes();
+  const now = new Date();
+  const ttlSeconds = opts?.ttlSeconds ?? 60;
+  const unsignedFields = {
+    orgMemberId: member.id,
+    companyId: member.companyId,
+    humanIdentityRef: member.identityRef,
+    issuedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + ttlSeconds * 1000).toISOString(),
+    nonce: randomUUID(),
+    version: 2 as const,
+    audience: v2.audience,
+    purpose: v2.purpose,
+    ...(v2.assurance ? { assurance: v2.assurance } : {}),
+  };
   const signingBytes = canonicalBytes({ ...attestationFrame(unsignedFields), signature: '' });
   const signature = edSign(null, signingBytes, privateKey).toString('hex');
   return { ...unsignedFields, signature, attesterPublicKeyDerHex: attesterKeyDerHex };

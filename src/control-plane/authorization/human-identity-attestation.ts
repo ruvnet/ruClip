@@ -90,6 +90,127 @@ export interface HumanIdentityAttestation {
   signature: string;
   /** Which attester key produced `signature` — checked against `admittedAttesterKeys` before the signature itself is trusted, same discipline as `ActorCredential.issuerPublicKeyDerHex` (§2 of ACTOR-IDENTITY-VERIFICATION.md). */
   attesterPublicKeyDerHex: string;
+  /**
+   * Version 2 (HUMAN-CREDENTIAL-ISSUANCE.md §6) — absent means version 1.
+   * Only when this is exactly 2 are `audience`, `purpose` and `assurance`
+   * covered by the signature; a version 1 attestation carrying any of them
+   * is rejected, because those fields would be unsigned.
+   */
+  version?: 2;
+  /** v2: which verifier this attestation is for (e.g. one runtime, or one company's leader). Checked against `expectedAudience`. */
+  audience?: string;
+  /** v2: the single action this attestation authorises. */
+  purpose?: AttestationPurpose;
+  /** v2: what the attester checked about the human, recorded for audit. Advisory — ruClip does not gate on it. */
+  assurance?: AttestationAssurance;
+}
+
+/** v2: binds an attestation to exactly one action on one subject at one version. */
+export interface AttestationPurpose {
+  /** e.g. 'approve' | 'reject' | 'submit' | 'revise' | 'heartbeat.create' — opaque to ruClip beyond equality. */
+  action: string;
+  /** e.g. `issue:<issueId>`. */
+  subjectRef: string;
+  /** The subject's version the human saw (a non-negative integer). */
+  subjectVersion: number;
+  /** `sha256:<64 hex>` of the exact summary the human confirmed. */
+  payloadDigest: string;
+}
+
+/** v2: attester-side facts, for audit only. */
+export interface AttestationAssurance {
+  orgRole?: string;
+  tier?: string;
+  surface?: string;
+}
+
+/** Options for the v2 checks. All optional, so existing v1 callers are unaffected. */
+export interface AttestationVerifyOptions {
+  /** When set, the attestation must be v2 and its `audience` must equal this exactly. */
+  expectedAudience?: string;
+  /** When true, a v1 attestation is rejected even if no `expectedAudience` is given. */
+  requireVersion2?: boolean;
+  /** When set, the attestation must be v2 and its `purpose` must equal this field for field. */
+  expectedPurpose?: AttestationPurpose;
+}
+
+const V2_CAPABILITY = 'ruclip.human-identity-attestation.v2';
+const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
+const MAX_V2_FIELD_LENGTH = 256;
+
+function isBoundedString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_V2_FIELD_LENGTH;
+}
+
+/**
+ * Structural check of the v2 fields, run before any signature work so a
+ * malformed attestation fails with a precise message. Also rejects a v1
+ * attestation that carries v2 fields (they would be unsigned).
+ */
+function assertWellFormedVersion(attestation: HumanIdentityAttestation): void {
+  const carriesV2Fields =
+    attestation.audience !== undefined || attestation.purpose !== undefined || attestation.assurance !== undefined;
+  if (attestation.version === undefined) {
+    if (carriesV2Fields) {
+      throw new ActorIdentityVerificationError(
+        'HumanIdentityAttestation carries audience/purpose/assurance without version 2 — those fields would not be signed',
+      );
+    }
+    return;
+  }
+  if (attestation.version !== 2) {
+    throw new ActorIdentityVerificationError(`HumanIdentityAttestation has unsupported version '${String(attestation.version)}'`);
+  }
+  if (!isBoundedString(attestation.audience)) {
+    throw new ActorIdentityVerificationError('HumanIdentityAttestation v2 requires a non-empty audience of at most 256 characters');
+  }
+  const p = attestation.purpose;
+  if (
+    !p ||
+    !isBoundedString(p.action) ||
+    !isBoundedString(p.subjectRef) ||
+    !Number.isSafeInteger(p.subjectVersion) ||
+    p.subjectVersion < 0 ||
+    typeof p.payloadDigest !== 'string' ||
+    !DIGEST_PATTERN.test(p.payloadDigest)
+  ) {
+    throw new ActorIdentityVerificationError(
+      'HumanIdentityAttestation v2 requires purpose {action, subjectRef, subjectVersion (integer >= 0), payloadDigest (sha256:<64 hex>)}',
+    );
+  }
+  const a = attestation.assurance;
+  if (a !== undefined) {
+    for (const key of ['orgRole', 'tier', 'surface'] as const) {
+      if (a[key] !== undefined && !isBoundedString(a[key])) {
+        throw new ActorIdentityVerificationError(`HumanIdentityAttestation v2 assurance.${key} must be a non-empty string of at most 256 characters`);
+      }
+    }
+  }
+}
+
+function assertExpectations(attestation: HumanIdentityAttestation, opts: AttestationVerifyOptions | undefined): void {
+  if (!opts) return;
+  const needsV2 = opts.requireVersion2 || opts.expectedAudience !== undefined || opts.expectedPurpose !== undefined;
+  if (needsV2 && attestation.version !== 2) {
+    throw new ActorIdentityVerificationError(
+      'A version 2 HumanIdentityAttestation is required here (audience/purpose binding); a version 1 attestation was presented',
+    );
+  }
+  if (opts.expectedAudience !== undefined && attestation.audience !== opts.expectedAudience) {
+    throw new ActorIdentityVerificationError('HumanIdentityAttestation audience does not match this verifier');
+  }
+  const want = opts.expectedPurpose;
+  const got = attestation.purpose;
+  if (
+    want !== undefined &&
+    (!got ||
+      got.action !== want.action ||
+      got.subjectRef !== want.subjectRef ||
+      got.subjectVersion !== want.subjectVersion ||
+      got.payloadDigest !== want.payloadDigest)
+  ) {
+    throw new ActorIdentityVerificationError('HumanIdentityAttestation purpose does not match the action being authorised');
+  }
 }
 
 /**
@@ -107,24 +228,50 @@ export function attestationFrame(
   attestation: Pick<
     HumanIdentityAttestation,
     'orgMemberId' | 'companyId' | 'humanIdentityRef' | 'issuedAt' | 'expiresAt' | 'nonce'
-  >,
+  > &
+    Partial<Pick<HumanIdentityAttestation, 'version' | 'audience' | 'purpose' | 'assurance'>>,
 ): Record<string, unknown> {
+  const value: Record<string, unknown> = {
+    orgMemberId: attestation.orgMemberId,
+    companyId: attestation.companyId,
+    humanIdentityRef: attestation.humanIdentityRef,
+    issuedAt: attestation.issuedAt,
+    expiresAt: attestation.expiresAt,
+  };
+  // v1 frames stay byte-identical to before this change: the v2 fields are
+  // added, and the capability changes, only when version === 2. A distinct
+  // capability means a v2 signature can never verify as a v1 frame or the
+  // reverse, even over the same base fields.
+  const isV2 = attestation.version === 2;
+  if (isV2) {
+    value.version = 2;
+    value.audience = attestation.audience;
+    value.purpose = attestation.purpose
+      ? {
+          action: attestation.purpose.action,
+          subjectRef: attestation.purpose.subjectRef,
+          subjectVersion: attestation.purpose.subjectVersion,
+          payloadDigest: attestation.purpose.payloadDigest,
+        }
+      : undefined;
+    value.assurance = attestation.assurance
+      ? {
+          ...(attestation.assurance.orgRole !== undefined ? { orgRole: attestation.assurance.orgRole } : {}),
+          ...(attestation.assurance.tier !== undefined ? { tier: attestation.assurance.tier } : {}),
+          ...(attestation.assurance.surface !== undefined ? { surface: attestation.assurance.surface } : {}),
+        }
+      : {};
+  }
   return {
     requestId: attestation.nonce,
     agentId: 'ruclip-human-attester',
     step: 0,
     kind: 'claim',
-    value: {
-      orgMemberId: attestation.orgMemberId,
-      companyId: attestation.companyId,
-      humanIdentityRef: attestation.humanIdentityRef,
-      issuedAt: attestation.issuedAt,
-      expiresAt: attestation.expiresAt,
-    },
+    value,
     confidence: 1,
     uncertainty: 0,
     dependencies: [],
-    capabilityUsed: 'ruclip.human-identity-attestation',
+    capabilityUsed: isV2 ? V2_CAPABILITY : 'ruclip.human-identity-attestation',
     evidenceHashes: [],
     cost: 0,
   };
@@ -236,20 +383,41 @@ export function resolveAdmittedAttesterKeys(config?: AttesterKeyConfig): Readonl
  * anything; this function only establishes that the attestation itself is
  * genuine and unreplayed.
  */
+export interface VerifiedHumanIdentityAttestation {
+  orgMemberId: string;
+  companyId: string;
+  humanIdentityRef: string;
+  /** Present (as 2) only for a version 2 attestation; absent for v1, so the v1 return shape is unchanged. */
+  version?: 2;
+  /** v2 only — already compared against `expectedAudience` when one was given. */
+  audience?: string;
+  /** v2 only — already compared against `expectedPurpose` when one was given. */
+  purpose?: AttestationPurpose;
+  /** v2 only — advisory. */
+  assurance?: AttestationAssurance;
+}
+
 export async function verifyHumanIdentityAttestation(
   attestation: HumanIdentityAttestation,
   admittedAttesterKeys: ReadonlySet<string>,
   config?: AgentDbAdapterConfig,
-): Promise<{ orgMemberId: string; companyId: string; humanIdentityRef: string }> {
+  verifyOptions?: AttestationVerifyOptions,
+): Promise<VerifiedHumanIdentityAttestation> {
   assertSafeId(attestation.orgMemberId, 'attestation.orgMemberId');
   assertSafeId(attestation.companyId, 'attestation.companyId');
   assertSafeId(attestation.nonce, 'attestation.nonce');
 
-  if (Date.parse(attestation.expiresAt) <= Date.now()) {
+  const expiresAtMs = Date.parse(attestation.expiresAt);
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
     throw new ActorIdentityVerificationError(
       `HumanIdentityAttestation for '${attestation.orgMemberId}' expired at ${attestation.expiresAt}`,
     );
   }
+  // v2 shape and the caller's audience/purpose expectations are checked
+  // before the signature and before the nonce is consumed: they need no
+  // I/O, and a mis-addressed attestation is refused with a precise reason.
+  assertWellFormedVersion(attestation);
+  assertExpectations(attestation, verifyOptions);
   if (!admittedAttesterKeys.has(attestation.attesterPublicKeyDerHex)) {
     throw new ActorIdentityVerificationError(
       `HumanIdentityAttestation for '${attestation.orgMemberId}' was signed by an attester key that is not ` +
@@ -281,7 +449,18 @@ export async function verifyHumanIdentityAttestation(
     );
   }
 
-  return { orgMemberId: attestation.orgMemberId, companyId: attestation.companyId, humanIdentityRef: attestation.humanIdentityRef };
+  const verified: VerifiedHumanIdentityAttestation = {
+    orgMemberId: attestation.orgMemberId,
+    companyId: attestation.companyId,
+    humanIdentityRef: attestation.humanIdentityRef,
+  };
+  if (attestation.version === 2) {
+    verified.version = 2;
+    verified.audience = attestation.audience;
+    verified.purpose = attestation.purpose;
+    if (attestation.assurance) verified.assurance = attestation.assurance;
+  }
+  return verified;
 }
 
 /**
@@ -317,7 +496,7 @@ export async function verifyHumanIdentityAttestation(
 export async function mintHumanActorCredential(
   attestation: HumanIdentityAttestation,
   admittedAttesterKeys: ReadonlySet<string>,
-  opts?: { ttlSeconds?: number },
+  opts?: { ttlSeconds?: number } & AttestationVerifyOptions,
   issuerConfig?: IssuerKeyConfig,
   config?: AgentDbAdapterConfig,
 ): Promise<ActorCredential> {
@@ -325,6 +504,7 @@ export async function mintHumanActorCredential(
     attestation,
     admittedAttesterKeys,
     config,
+    opts ? { expectedAudience: opts.expectedAudience, requireVersion2: opts.requireVersion2, expectedPurpose: opts.expectedPurpose } : undefined,
   );
 
   const target = await recallOrgMember(companyId, orgMemberId, config);
@@ -348,7 +528,12 @@ export async function mintHumanActorCredential(
     );
   }
 
-  const credential = await mintActorCredential(orgMemberId, companyId, opts ?? { ttlSeconds: DEFAULT_TTL_SECONDS }, issuerConfig);
+  const credential = await mintActorCredential(
+    orgMemberId,
+    companyId,
+    { ttlSeconds: opts?.ttlSeconds ?? DEFAULT_TTL_SECONDS },
+    issuerConfig,
+  );
 
   await callTool(
     'memory_store',
