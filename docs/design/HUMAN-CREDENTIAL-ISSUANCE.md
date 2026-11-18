@@ -268,7 +268,7 @@ Version 2 adds three signed fields, all opt-in:
 |---|---|---|
 | `version: 2` | marks the frame as v2 | yes; any other value except absent is refused |
 | `audience` | the verifier this is for (≤256 chars) | equality with `expectedAudience`, when the caller passes one |
-| `purpose` | `{action, subjectRef, subjectVersion, payloadDigest}` | shape always; equality, field by field, with `expectedPurpose` when passed |
+| `purpose` | `{action, subjectRef, subjectVersion, payloadDigest}`; `action` is one of `ATTESTATION_ACTIONS` (`submit`, `approve`, `reject`, `revise`, `heartbeat.create`) | shape always, and an unknown action is refused (fail closed); equality, field by field, with `expectedPurpose` when passed |
 | `assurance` | `{orgRole?, tier?, surface?}` attester-side facts | shape only; recorded, never a gate |
 
 Rules:

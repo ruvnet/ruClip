@@ -107,8 +107,8 @@ export interface HumanIdentityAttestation {
 
 /** v2: binds an attestation to exactly one action on one subject at one version. */
 export interface AttestationPurpose {
-  /** e.g. 'approve' | 'reject' | 'submit' | 'revise' | 'heartbeat.create' — opaque to ruClip beyond equality. */
-  action: string;
+  /** One of `ATTESTATION_ACTIONS`; anything else is refused (fail closed). */
+  action: AttestationAction;
   /** e.g. `issue:<issueId>`. */
   subjectRef: string;
   /** The subject's version the human saw (a non-negative integer). */
@@ -133,6 +133,14 @@ export interface AttestationVerifyOptions {
   /** When set, the attestation must be v2 and its `purpose` must equal this field for field. */
   expectedPurpose?: AttestationPurpose;
 }
+
+/**
+ * The closed set of actions a v2 attestation may authorise: the four
+ * approval transitions plus heartbeat creation. An unknown action is
+ * refused, so a new action needs a deliberate change here.
+ */
+export const ATTESTATION_ACTIONS = ['submit', 'approve', 'reject', 'revise', 'heartbeat.create'] as const;
+export type AttestationAction = (typeof ATTESTATION_ACTIONS)[number];
 
 const V2_CAPABILITY = 'ruclip.human-identity-attestation.v2';
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -167,7 +175,7 @@ function assertWellFormedVersion(attestation: HumanIdentityAttestation): void {
   const p = attestation.purpose;
   if (
     !p ||
-    !isBoundedString(p.action) ||
+    !(ATTESTATION_ACTIONS as readonly string[]).includes(p.action as string) ||
     !isBoundedString(p.subjectRef) ||
     !Number.isSafeInteger(p.subjectVersion) ||
     p.subjectVersion < 0 ||
@@ -175,7 +183,7 @@ function assertWellFormedVersion(attestation: HumanIdentityAttestation): void {
     !DIGEST_PATTERN.test(p.payloadDigest)
   ) {
     throw new ActorIdentityVerificationError(
-      'HumanIdentityAttestation v2 requires purpose {action, subjectRef, subjectVersion (integer >= 0), payloadDigest (sha256:<64 hex>)}',
+      'HumanIdentityAttestation v2 requires purpose {action (one of ATTESTATION_ACTIONS), subjectRef, subjectVersion (integer >= 0), payloadDigest (sha256:<64 hex>)}',
     );
   }
   const a = attestation.assurance;

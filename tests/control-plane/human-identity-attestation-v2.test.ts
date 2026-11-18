@@ -17,6 +17,7 @@ import {
   unadmittedAttesterPrivateKeyPem,
 } from '../support/actor-credential-fixture.js';
 import {
+  ATTESTATION_ACTIONS,
   attestationFrame,
   mintHumanActorCredential,
   verifyHumanIdentityAttestation,
@@ -106,7 +107,7 @@ test('v2: tampering the audience after signing breaks the signature', async () =
 
 test('v2: tampering any purpose field after signing breaks the signature', async () => {
   for (const change of [
-    { action: 'reject' },
+    { action: 'reject' as const },
     { subjectRef: 'issue:issue-2' },
     { subjectVersion: 5 },
     { payloadDigest: 'sha256:' + 'b'.repeat(64) },
@@ -131,7 +132,7 @@ test('v2: tampering assurance after signing breaks the signature', async () => {
 
 test('v2: a purpose that does not match expectedPurpose is refused, field by field', async () => {
   for (const change of [
-    { action: 'reject' },
+    { action: 'reject' as const },
     { subjectRef: 'issue:issue-2' },
     { subjectVersion: 5 },
     { payloadDigest: 'sha256:' + 'c'.repeat(64) },
@@ -294,4 +295,29 @@ test('v2: a v2 signature presented with its v2 fields stripped (downgrade to v1)
     () => verifyHumanIdentityAttestation(downgraded, testAdmittedAttesterKeys, config),
     (err: unknown) => err instanceof ActorIdentityVerificationError && /signature/.test((err as Error).message),
   );
+});
+
+test('v2: an action outside ATTESTATION_ACTIONS is refused, even when validly signed (fail closed)', async () => {
+  for (const action of ['delete', 'APPROVE', 'approve ', 'heartbeat.pause']) {
+    const config = bridgeFor(human());
+    const att = await humanAttestationV2For(human(), {
+      audience: AUDIENCE,
+      purpose: { ...PURPOSE, action: action as AttestationPurpose['action'] },
+    });
+    await assert.rejects(
+      () => verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config),
+      (err: unknown) => err instanceof ActorIdentityVerificationError && /requires purpose/.test((err as Error).message),
+      `action '${action}' must be refused`,
+    );
+  }
+});
+
+test('v2: every action in ATTESTATION_ACTIONS is accepted', async () => {
+  for (const action of ATTESTATION_ACTIONS) {
+    const config = bridgeFor(human());
+    const purpose = { ...PURPOSE, action };
+    const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose });
+    const verified = await verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, { expectedPurpose: purpose });
+    assert.equal(verified.purpose?.action, action);
+  }
 });
