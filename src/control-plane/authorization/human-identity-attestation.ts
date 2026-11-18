@@ -101,7 +101,7 @@ export interface HumanIdentityAttestation {
   audience?: string;
   /** v2: the single action this attestation authorises. */
   purpose?: AttestationPurpose;
-  /** v2: what the attester checked about the human, recorded for audit. Advisory — ruClip does not gate on it. */
+  /** v2: what the attester checked about the human, recorded for audit. Advisory — ruClip does not gate on it. Signed only when present; `{}` is refused. */
   assurance?: AttestationAssurance;
 }
 
@@ -124,13 +124,17 @@ export interface AttestationAssurance {
   surface?: string;
 }
 
-/** Options for the v2 checks. All optional, so existing v1 callers are unaffected. */
+/**
+ * Options for the v2 checks. Optional for v1 callers. A v2 attestation is refused unless both
+ * `expectedAudience` and `expectedPurpose` are given; build `expectedPurpose` from server state
+ * (the subject, its current version, the digest of the summary the server rendered), never from the request.
+ */
 export interface AttestationVerifyOptions {
-  /** When set, the attestation must be v2 and its `audience` must equal this exactly. */
+  /** The attestation must be v2 and its `audience` must equal this exactly. Required for v2. */
   expectedAudience?: string;
   /** When true, a v1 attestation is rejected even if no `expectedAudience` is given. */
   requireVersion2?: boolean;
-  /** When set, the attestation must be v2 and its `purpose` must equal this field for field. */
+  /** The attestation must be v2 and its `purpose` must equal this field for field. Required for v2. */
   expectedPurpose?: AttestationPurpose;
 }
 
@@ -145,9 +149,80 @@ export type AttestationAction = (typeof ATTESTATION_ACTIONS)[number];
 const V2_CAPABILITY = 'ruclip.human-identity-attestation.v2';
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const MAX_V2_FIELD_LENGTH = 256;
+/** `<kind>:<id>`, e.g. `issue:issue-1`: a lower-case kind, then an id in the store's safe-id charset. */
+const SUBJECT_REF_PATTERN = /^[a-z][a-z0-9._-]{0,63}:[A-Za-z0-9_-]{1,256}$/;
+const PURPOSE_KEYS = ['action', 'subjectRef', 'subjectVersion', 'payloadDigest'] as const;
+const ASSURANCE_KEYS = ['orgRole', 'tier', 'surface'] as const;
+/** An attestation may claim an issuedAt at most this far ahead of the verifier's clock. */
+export const ATTESTATION_CLOCK_SKEW_MS = 60_000;
+/** The longest an attestation may live (expiresAt - issuedAt). The default TTL is 15 minutes. */
+export const MAX_ATTESTATION_LIFETIME_MS = 60 * 60 * 1000;
+/** One message for every audience/purpose mismatch, so the error is not an oracle for which field differs. */
+const BINDING_MISMATCH = 'HumanIdentityAttestation is not bound to this verifier and action';
 
 function isBoundedString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= MAX_V2_FIELD_LENGTH;
+}
+
+/** A plain object whose own keys (symbols and non-enumerables included) are all in `allowed`. */
+function hasOnlyKeys(value: unknown, allowed: readonly string[]): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return false;
+  return Reflect.ownKeys(value).every((key) => typeof key === 'string' && allowed.includes(key));
+}
+
+/**
+ * Base fields every attestation must carry as bounded strings, plus the time
+ * window. null, undefined and NaN canonicalise alike, so a missing or
+ * non-string field could otherwise be swapped for another after signing.
+ */
+function assertWellFormedBase(attestation: HumanIdentityAttestation, nowMs: number): void {
+  for (const key of ['humanIdentityRef', 'issuedAt', 'expiresAt', 'signature', 'attesterPublicKeyDerHex'] as const) {
+    const value: unknown = attestation[key];
+    if (typeof value !== 'string' || value.length === 0 || value.length > (key === 'humanIdentityRef' ? MAX_V2_FIELD_LENGTH : 1024)) {
+      throw new ActorIdentityVerificationError(`HumanIdentityAttestation requires ${key} as a non-empty bounded string`);
+    }
+  }
+  const expiresAtMs = Date.parse(attestation.expiresAt);
+  const issuedAtMs = Date.parse(attestation.issuedAt);
+  if (!Number.isFinite(expiresAtMs) || !Number.isFinite(issuedAtMs)) {
+    throw new ActorIdentityVerificationError('HumanIdentityAttestation issuedAt and expiresAt must be valid ISO 8601 timestamps');
+  }
+  if (expiresAtMs <= nowMs) {
+    throw new ActorIdentityVerificationError(
+      `HumanIdentityAttestation for '${attestation.orgMemberId}' expired at ${attestation.expiresAt}`,
+    );
+  }
+  if (issuedAtMs > nowMs + ATTESTATION_CLOCK_SKEW_MS) {
+    throw new ActorIdentityVerificationError('HumanIdentityAttestation issuedAt is in the future');
+  }
+  if (expiresAtMs <= issuedAtMs || expiresAtMs - issuedAtMs > MAX_ATTESTATION_LIFETIME_MS) {
+    throw new ActorIdentityVerificationError('HumanIdentityAttestation lifetime (expiresAt - issuedAt) exceeds the maximum');
+  }
+}
+
+/** The v2 fields exactly as signed. Verification returns these, never the presented objects. */
+function signedV2Fields(
+  attestation: Partial<Pick<HumanIdentityAttestation, 'audience' | 'purpose' | 'assurance'>>,
+): { audience: string | undefined; purpose: AttestationPurpose | undefined; assurance?: AttestationAssurance } {
+  const p = attestation.purpose;
+  const a = attestation.assurance;
+  return {
+    audience: attestation.audience,
+    purpose: p
+      ? { action: p.action, subjectRef: p.subjectRef, subjectVersion: p.subjectVersion, payloadDigest: p.payloadDigest }
+      : undefined,
+    ...(a
+      ? {
+          assurance: {
+            ...(a.orgRole !== undefined ? { orgRole: a.orgRole } : {}),
+            ...(a.tier !== undefined ? { tier: a.tier } : {}),
+            ...(a.surface !== undefined ? { surface: a.surface } : {}),
+          },
+        }
+      : {}),
+  };
 }
 
 /**
@@ -174,21 +249,26 @@ function assertWellFormedVersion(attestation: HumanIdentityAttestation): void {
   }
   const p = attestation.purpose;
   if (
-    !p ||
+    !hasOnlyKeys(p, PURPOSE_KEYS) ||
     !(ATTESTATION_ACTIONS as readonly string[]).includes(p.action as string) ||
-    !isBoundedString(p.subjectRef) ||
+    typeof p.subjectRef !== 'string' ||
+    !SUBJECT_REF_PATTERN.test(p.subjectRef) ||
     !Number.isSafeInteger(p.subjectVersion) ||
     p.subjectVersion < 0 ||
     typeof p.payloadDigest !== 'string' ||
     !DIGEST_PATTERN.test(p.payloadDigest)
   ) {
     throw new ActorIdentityVerificationError(
-      'HumanIdentityAttestation v2 requires purpose {action (one of ATTESTATION_ACTIONS), subjectRef, subjectVersion (integer >= 0), payloadDigest (sha256:<64 hex>)}',
+      'HumanIdentityAttestation v2 requires purpose with exactly {action (one of ATTESTATION_ACTIONS), subjectRef (<kind>:<id>), subjectVersion (integer >= 0), payloadDigest (sha256:<64 hex>)}',
     );
   }
   const a = attestation.assurance;
   if (a !== undefined) {
-    for (const key of ['orgRole', 'tier', 'surface'] as const) {
+    // An empty assurance is refused: absent assurance is not signed, so `{}` added after signing must not verify.
+    if (!hasOnlyKeys(a, ASSURANCE_KEYS) || Reflect.ownKeys(a).length === 0) {
+      throw new ActorIdentityVerificationError('HumanIdentityAttestation v2 assurance must hold at least one of orgRole, tier, surface and nothing else');
+    }
+    for (const key of ASSURANCE_KEYS) {
       if (a[key] !== undefined && !isBoundedString(a[key])) {
         throw new ActorIdentityVerificationError(`HumanIdentityAttestation v2 assurance.${key} must be a non-empty string of at most 256 characters`);
       }
@@ -197,27 +277,34 @@ function assertWellFormedVersion(attestation: HumanIdentityAttestation): void {
 }
 
 function assertExpectations(attestation: HumanIdentityAttestation, opts: AttestationVerifyOptions | undefined): void {
-  if (!opts) return;
-  const needsV2 = opts.requireVersion2 || opts.expectedAudience !== undefined || opts.expectedPurpose !== undefined;
-  if (needsV2 && attestation.version !== 2) {
+  const needsV2 =
+    !!opts && (opts.requireVersion2 === true || opts.expectedAudience !== undefined || opts.expectedPurpose !== undefined);
+  if (attestation.version !== 2) {
+    if (needsV2) {
+      throw new ActorIdentityVerificationError(
+        'A version 2 HumanIdentityAttestation is required here (audience/purpose binding); a version 1 attestation was presented',
+      );
+    }
+    return;
+  }
+  // A v2 attestation binds nothing unless the verifier states both what it is and what is being
+  // authorised; requireVersion2 alone would accept any audience and any purpose.
+  const want = opts?.expectedPurpose;
+  if (!isBoundedString(opts?.expectedAudience) || !want || typeof want !== 'object') {
     throw new ActorIdentityVerificationError(
-      'A version 2 HumanIdentityAttestation is required here (audience/purpose binding); a version 1 attestation was presented',
+      'A version 2 HumanIdentityAttestation must be verified against both expectedAudience and expectedPurpose',
     );
   }
-  if (opts.expectedAudience !== undefined && attestation.audience !== opts.expectedAudience) {
-    throw new ActorIdentityVerificationError('HumanIdentityAttestation audience does not match this verifier');
-  }
-  const want = opts.expectedPurpose;
   const got = attestation.purpose;
   if (
-    want !== undefined &&
-    (!got ||
-      got.action !== want.action ||
-      got.subjectRef !== want.subjectRef ||
-      got.subjectVersion !== want.subjectVersion ||
-      got.payloadDigest !== want.payloadDigest)
+    attestation.audience !== opts!.expectedAudience ||
+    !got ||
+    got.action !== want.action ||
+    got.subjectRef !== want.subjectRef ||
+    got.subjectVersion !== want.subjectVersion ||
+    got.payloadDigest !== want.payloadDigest
   ) {
-    throw new ActorIdentityVerificationError('HumanIdentityAttestation purpose does not match the action being authorised');
+    throw new ActorIdentityVerificationError(BINDING_MISMATCH);
   }
 }
 
@@ -252,23 +339,10 @@ export function attestationFrame(
   // reverse, even over the same base fields.
   const isV2 = attestation.version === 2;
   if (isV2) {
+    // Assurance is signed only when present; verification refuses an empty one, so adding `{}`
+    // after signing cannot pass as signed.
     value.version = 2;
-    value.audience = attestation.audience;
-    value.purpose = attestation.purpose
-      ? {
-          action: attestation.purpose.action,
-          subjectRef: attestation.purpose.subjectRef,
-          subjectVersion: attestation.purpose.subjectVersion,
-          payloadDigest: attestation.purpose.payloadDigest,
-        }
-      : undefined;
-    value.assurance = attestation.assurance
-      ? {
-          ...(attestation.assurance.orgRole !== undefined ? { orgRole: attestation.assurance.orgRole } : {}),
-          ...(attestation.assurance.tier !== undefined ? { tier: attestation.assurance.tier } : {}),
-          ...(attestation.assurance.surface !== undefined ? { surface: attestation.assurance.surface } : {}),
-        }
-      : {};
+    Object.assign(value, signedV2Fields(attestation));
   }
   return {
     requestId: attestation.nonce,
@@ -415,12 +489,7 @@ export async function verifyHumanIdentityAttestation(
   assertSafeId(attestation.companyId, 'attestation.companyId');
   assertSafeId(attestation.nonce, 'attestation.nonce');
 
-  const expiresAtMs = Date.parse(attestation.expiresAt);
-  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
-    throw new ActorIdentityVerificationError(
-      `HumanIdentityAttestation for '${attestation.orgMemberId}' expired at ${attestation.expiresAt}`,
-    );
-  }
+  assertWellFormedBase(attestation, Date.now());
   // v2 shape and the caller's audience/purpose expectations are checked
   // before the signature and before the nonce is consumed: they need no
   // I/O, and a mis-addressed attestation is refused with a precise reason.
@@ -463,10 +532,12 @@ export async function verifyHumanIdentityAttestation(
     humanIdentityRef: attestation.humanIdentityRef,
   };
   if (attestation.version === 2) {
+    // The reconstructed, signed objects — never the presenter's, which could carry unsigned keys.
+    const signed = signedV2Fields(attestation);
     verified.version = 2;
-    verified.audience = attestation.audience;
-    verified.purpose = attestation.purpose;
-    if (attestation.assurance) verified.assurance = attestation.assurance;
+    verified.audience = signed.audience;
+    verified.purpose = signed.purpose;
+    if (signed.assurance) verified.assurance = signed.assurance;
   }
   return verified;
 }

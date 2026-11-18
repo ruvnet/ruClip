@@ -34,6 +34,11 @@ const PURPOSE: AttestationPurpose = {
   payloadDigest: 'sha256:' + 'a'.repeat(64),
 };
 
+/** Both expectations, which every v2 verification must state. */
+const BOTH = { expectedAudience: AUDIENCE, expectedPurpose: PURPOSE };
+const bindingRefused = (err: unknown) =>
+  err instanceof ActorIdentityVerificationError && /not bound to this verifier and action/.test((err as Error).message);
+
 function human(overrides: Partial<OrgMember> = {}): OrgMember {
   return {
     id: 'om-human',
@@ -90,8 +95,8 @@ test('v2: a different expectedAudience is refused (an attestation for runtime A 
   const config = bridgeFor(human());
   const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE });
   await assert.rejects(
-    () => verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, { expectedAudience: 'rupro-runtime:rt-2:thumb-def' }),
-    (err: unknown) => err instanceof ActorIdentityVerificationError && /audience/.test((err as Error).message),
+    () => verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, { ...BOTH, expectedAudience: 'rupro-runtime:rt-2:thumb-def' }),
+    bindingRefused,
   );
 });
 
@@ -100,7 +105,7 @@ test('v2: tampering the audience after signing breaks the signature', async () =
   const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE });
   const forged = { ...att, audience: 'rupro-runtime:rt-2:thumb-def' };
   await assert.rejects(
-    () => verifyHumanIdentityAttestation(forged, testAdmittedAttesterKeys, config, { expectedAudience: 'rupro-runtime:rt-2:thumb-def' }),
+    () => verifyHumanIdentityAttestation(forged, testAdmittedAttesterKeys, config, { ...BOTH, expectedAudience: 'rupro-runtime:rt-2:thumb-def' }),
     (err: unknown) => err instanceof ActorIdentityVerificationError && /signature/.test((err as Error).message),
   );
 });
@@ -116,7 +121,7 @@ test('v2: tampering any purpose field after signing breaks the signature', async
     const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE });
     const forged = { ...att, purpose: { ...PURPOSE, ...change } };
     await assert.rejects(
-      () => verifyHumanIdentityAttestation(forged, testAdmittedAttesterKeys, config),
+      () => verifyHumanIdentityAttestation(forged, testAdmittedAttesterKeys, config, { ...BOTH, expectedPurpose: forged.purpose }),
       (err: unknown) => err instanceof ActorIdentityVerificationError && /signature/.test((err as Error).message),
       `tampered ${JSON.stringify(change)} must fail signature verification`,
     );
@@ -127,7 +132,10 @@ test('v2: tampering assurance after signing breaks the signature', async () => {
   const config = bridgeFor(human());
   const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE, assurance: { orgRole: 'Viewer' } });
   const forged = { ...att, assurance: { orgRole: 'Owner' } };
-  await assert.rejects(() => verifyHumanIdentityAttestation(forged, testAdmittedAttesterKeys, config), ActorIdentityVerificationError);
+  await assert.rejects(
+    () => verifyHumanIdentityAttestation(forged, testAdmittedAttesterKeys, config, BOTH),
+    (err: unknown) => err instanceof ActorIdentityVerificationError && /signature/.test((err as Error).message),
+  );
 });
 
 test('v2: a purpose that does not match expectedPurpose is refused, field by field', async () => {
@@ -140,8 +148,8 @@ test('v2: a purpose that does not match expectedPurpose is refused, field by fie
     const config = bridgeFor(human());
     const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE });
     await assert.rejects(
-      () => verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, { expectedPurpose: { ...PURPOSE, ...change } }),
-      (err: unknown) => err instanceof ActorIdentityVerificationError && /purpose/.test((err as Error).message),
+      () => verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, { ...BOTH, expectedPurpose: { ...PURPOSE, ...change } }),
+      bindingRefused,
       `expected purpose differing by ${JSON.stringify(change)} must be refused`,
     );
   }
@@ -188,6 +196,10 @@ test('v2: malformed purpose fields are refused before any signature work', async
     { ...PURPOSE, subjectVersion: 1.5 },
     { ...PURPOSE, action: '' },
     { ...PURPOSE, subjectRef: 'x'.repeat(257) },
+    { ...PURPOSE, subjectRef: 'issue-1' },
+    { ...PURPOSE, subjectRef: 'Issue:issue-1' },
+    { ...PURPOSE, subjectRef: 'issue:issue/1' },
+    { ...PURPOSE, extra: 'unsigned' },
   ]) {
     const config = bridgeFor(human());
     const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: bad as AttestationPurpose });
@@ -212,9 +224,9 @@ test('v2: a missing or oversized audience is refused', async () => {
 test('v2: the nonce is single-use exactly as in v1', async () => {
   const config = bridgeFor(human());
   const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE });
-  await verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, { expectedAudience: AUDIENCE });
+  await verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, BOTH);
   await assert.rejects(
-    () => verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, { expectedAudience: AUDIENCE }),
+    () => verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, BOTH),
     (err: unknown) => err instanceof ActorIdentityVerificationError && /replay/.test((err as Error).message),
   );
 });
@@ -227,7 +239,7 @@ test('v2: an unadmitted attester key is refused even with matching audience and 
     { attesterPrivateKeyPem: unadmittedAttesterPrivateKeyPem },
   );
   await assert.rejects(
-    () => verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, { expectedAudience: AUDIENCE, expectedPurpose: PURPOSE }),
+    () => verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, BOTH),
     (err: unknown) => err instanceof ActorIdentityVerificationError && /not admitted/.test((err as Error).message),
   );
 });
@@ -237,7 +249,7 @@ test('v2: the identity binding to the persisted OrgMember still applies', async 
   const config = bridgeFor(persisted);
   const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE });
   await assert.rejects(
-    () => mintHumanActorCredential(att, testAdmittedAttesterKeys, { expectedAudience: AUDIENCE }, testIssuerConfig, config),
+    () => mintHumanActorCredential(att, testAdmittedAttesterKeys, BOTH, testIssuerConfig, config),
     (err: unknown) => err instanceof ActorIdentityVerificationError && /mismatched identity/.test((err as Error).message),
   );
 });
@@ -317,7 +329,132 @@ test('v2: every action in ATTESTATION_ACTIONS is accepted', async () => {
     const config = bridgeFor(human());
     const purpose = { ...PURPOSE, action };
     const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose });
-    const verified = await verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, { expectedPurpose: purpose });
+    const verified = await verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, { ...BOTH, expectedPurpose: purpose });
     assert.equal(verified.purpose?.action, action);
   }
+});
+
+test('v2: unsigned keys added to purpose or assurance after signing are refused, never returned as verified', async () => {
+  const cases: Array<Record<string, unknown>> = [
+    { purpose: { ...PURPOSE, extra: 'x' } },
+    { assurance: { orgRole: 'Member', level: 'high' } },
+    { assurance: {} },
+    { assurance: { orgRole: 'Member' } },
+  ];
+  for (const change of cases) {
+    const config = bridgeFor(human());
+    const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE });
+    await assert.rejects(
+      () => verifyHumanIdentityAttestation({ ...att, ...change } as typeof att, testAdmittedAttesterKeys, config, BOTH),
+      ActorIdentityVerificationError,
+      `${JSON.stringify(change)} must be refused`,
+    );
+  }
+});
+
+test('v2: the returned purpose and assurance are the signed reconstructions, not the presented objects', async () => {
+  const config = bridgeFor(human());
+  const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE, assurance: { tier: 'edit' } });
+  const verified = await verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, BOTH);
+  assert.notEqual(verified.purpose, att.purpose);
+  assert.notEqual(verified.assurance, att.assurance);
+  assert.deepEqual(Object.keys(verified.purpose!).sort(), ['action', 'payloadDigest', 'subjectRef', 'subjectVersion']);
+  assert.deepEqual(verified.assurance, { tier: 'edit' });
+});
+
+test('v2: a v2 attestation is refused unless both expectedAudience and expectedPurpose are given', async () => {
+  for (const opts of [undefined, {}, { requireVersion2: true }, { expectedAudience: AUDIENCE }, { expectedPurpose: PURPOSE }, { requireVersion2: true, expectedAudience: AUDIENCE }]) {
+    const config = bridgeFor(human());
+    const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE });
+    await assert.rejects(
+      () => verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, opts),
+      (err: unknown) => err instanceof ActorIdentityVerificationError && /both expectedAudience and expectedPurpose/.test((err as Error).message),
+      `opts ${JSON.stringify(opts)} must be refused`,
+    );
+  }
+});
+
+test('v2: an audience or purpose mismatch uses one generic error and leaves the nonce unconsumed', async () => {
+  const config = bridgeFor(human());
+  const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE });
+  const messages = new Set<string>();
+  for (const opts of [
+    { ...BOTH, expectedAudience: 'rupro-runtime:other' },
+    { ...BOTH, expectedPurpose: { ...PURPOSE, subjectVersion: 9 } },
+    { ...BOTH, expectedPurpose: { ...PURPOSE, action: 'reject' as const } },
+  ]) {
+    await assert.rejects(
+      () => verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, opts),
+      (err: unknown) => (bindingRefused(err) && messages.add((err as Error).message) !== undefined) || false,
+    );
+  }
+  assert.equal(messages.size, 1);
+  const verified = await verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, BOTH);
+  assert.equal(verified.version, 2);
+});
+
+test('base fields: a non-date expiresAt or issuedAt is refused', async () => {
+  for (const change of [{ expiresAt: 'not-a-date' }, { issuedAt: 'not-a-date' }]) {
+    const config = bridgeFor(human());
+    const v1 = await humanAttestationFor(human());
+    await assert.rejects(
+      () => verifyHumanIdentityAttestation({ ...v1, ...change }, testAdmittedAttesterKeys, config),
+      (err: unknown) => err instanceof ActorIdentityVerificationError && /valid ISO 8601/.test((err as Error).message),
+      `${JSON.stringify(change)} must be refused`,
+    );
+  }
+});
+
+test('base fields: humanIdentityRef, issuedAt and expiresAt must be bounded strings (null/undefined/NaN are not interchangeable)', async () => {
+  for (const key of ['humanIdentityRef', 'issuedAt', 'expiresAt'] as const) {
+    for (const bad of [null, undefined, Number.NaN, '', 'x'.repeat(2000)]) {
+      const config = bridgeFor(human());
+      const v1 = await humanAttestationFor(human());
+      await assert.rejects(
+        () => verifyHumanIdentityAttestation({ ...v1, [key]: bad } as unknown as typeof v1, testAdmittedAttesterKeys, config),
+        (err: unknown) => err instanceof ActorIdentityVerificationError && /bounded string/.test((err as Error).message),
+        `${key}=${String(bad).slice(0, 20)} must be refused`,
+      );
+    }
+  }
+});
+
+test('time window: a future issuedAt beyond the skew and an over-long lifetime are refused', async () => {
+  const now = Date.now();
+  for (const [change, pattern] of [
+    [{ issuedAt: new Date(now + 5 * 60_000).toISOString(), expiresAt: new Date(now + 10 * 60_000).toISOString() }, /in the future/],
+    [{ issuedAt: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 2 * 60 * 60_000).toISOString() }, /lifetime/],
+  ] as const) {
+    const config = bridgeFor(human());
+    const v1 = await humanAttestationFor(human());
+    await assert.rejects(
+      () => verifyHumanIdentityAttestation({ ...v1, ...change }, testAdmittedAttesterKeys, config),
+      (err: unknown) => err instanceof ActorIdentityVerificationError && pattern.test((err as Error).message),
+    );
+  }
+  // Inside the skew is accepted (the signature then decides): here it is checked before the signature.
+  const config = bridgeFor(human());
+  const v1 = await humanAttestationFor(human());
+  await assert.rejects(
+    () => verifyHumanIdentityAttestation({ ...v1, issuedAt: new Date(now + 30_000).toISOString() }, testAdmittedAttesterKeys, config),
+    (err: unknown) => err instanceof ActorIdentityVerificationError && /signature/.test((err as Error).message),
+  );
+});
+
+test('v2: an unsigned key beside a signed assurance is refused, even though the signature still matches', async () => {
+  const config = bridgeFor(human());
+  const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE, assurance: { orgRole: 'Member' } });
+  await assert.rejects(
+    () => verifyHumanIdentityAttestation({ ...att, assurance: { orgRole: 'Member', level: 'high' } as typeof att.assurance }, testAdmittedAttesterKeys, config, BOTH),
+    (err: unknown) => err instanceof ActorIdentityVerificationError && /assurance/.test((err as Error).message),
+  );
+});
+
+test('v2: an empty assurance is refused even when an attester signed it', async () => {
+  const config = bridgeFor(human());
+  const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE, assurance: {} });
+  await assert.rejects(
+    () => verifyHumanIdentityAttestation(att, testAdmittedAttesterKeys, config, BOTH),
+    (err: unknown) => err instanceof ActorIdentityVerificationError && /assurance/.test((err as Error).message),
+  );
 });
