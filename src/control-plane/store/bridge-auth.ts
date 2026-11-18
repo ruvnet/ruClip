@@ -61,10 +61,20 @@ interface CachedToken {
   expiresAtMs: number;
 }
 
-/** Keyed by fetchImpl so concurrent tests injecting distinct fetchImpls never share a cached token (mirrors bridge-client.ts's handshake cache). */
-const tokenCache = new WeakMap<typeof fetch, Map<string, CachedToken>>();
+/**
+ * Keyed by fetchImpl so concurrent tests injecting distinct fetchImpls never
+ * share a cached token. Caches the in-flight `Promise<CachedToken>`, not
+ * only the resolved value, so concurrent callers resolving a token for the
+ * same (fetchFn, audience) while the cache is cold share one metadata-server
+ * round trip instead of each independently issuing their own — the same
+ * discipline bridge-client.ts's `ensureHandshake` already documents and
+ * applies for its own cold-cache concurrent-call case (see that file's
+ * header comment on "caching the in-flight promise so concurrent first
+ * calls don't double-initialize"); this file's cache didn't follow it.
+ */
+const tokenCache = new WeakMap<typeof fetch, Map<string, Promise<CachedToken>>>();
 
-function getTokenCacheMap(fetchFn: typeof fetch): Map<string, CachedToken> {
+function getTokenCacheMap(fetchFn: typeof fetch): Map<string, Promise<CachedToken>> {
   let map = tokenCache.get(fetchFn);
   if (!map) {
     map = new Map();
@@ -124,14 +134,26 @@ async function fetchIdentityToken(fetchFn: typeof fetch, audience: string): Prom
 async function getIdentityToken(fetchFn: typeof fetch, audience: string): Promise<string> {
   const cache = getTokenCacheMap(fetchFn);
   const cached = cache.get(audience);
-  if (cached && cached.expiresAtMs > Date.now()) {
-    return cached.token;
+  if (cached) {
+    const entry = await cached;
+    if (entry.expiresAtMs > Date.now()) {
+      return entry.token;
+    }
   }
-  const token = await fetchIdentityToken(fetchFn, audience);
-  const exp = decodeJwtExpiryMs(token);
-  const expiresAtMs = exp !== undefined ? exp - TOKEN_REFRESH_MARGIN_MS : Date.now() + TOKEN_MAX_AGE_MS;
-  cache.set(audience, { token, expiresAtMs });
-  return token;
+  const pending: Promise<CachedToken> = (async () => {
+    const token = await fetchIdentityToken(fetchFn, audience);
+    const exp = decodeJwtExpiryMs(token);
+    const expiresAtMs = exp !== undefined ? exp - TOKEN_REFRESH_MARGIN_MS : Date.now() + TOKEN_MAX_AGE_MS;
+    return { token, expiresAtMs };
+  })().catch((err: unknown) => {
+    // The fetch itself failed — don't poison the cache with a rejected
+    // promise forever; the next call gets a fresh attempt, same discipline
+    // as bridge-client.ts's ensureHandshake.
+    cache.delete(audience);
+    throw err;
+  });
+  cache.set(audience, pending);
+  return (await pending).token;
 }
 
 /**
