@@ -29,6 +29,7 @@ import {
   getBlockerIssueIds,
   getChildIssueIds,
   persistComment,
+  recallComment,
   storePattern,
   searchPatterns,
   recordCausalEdge,
@@ -313,6 +314,37 @@ test('persistComment stores at the tier passed in for the parent issue', async (
   await persistComment('co-1', 'goal-1', comment, 'working', config);
   assert.equal(calls[0]?.args.key, 'ruclip:company:co-1:comment:comment-1');
   assert.equal(calls[0]?.args.tier, 'working');
+});
+
+test('recallComment reads the comment by exact key from the working tier', async () => {
+  const comment: Comment = { id: 'comment-1', issueId: 'issue-1', authorId: 'om-1', body: 'hi', createdAt: now };
+  const { calls, config } = mockBridge({
+    'agentdb_hierarchical-recall': (args) =>
+      args.tier === 'working'
+        ? {
+            results: [
+              { key: 'ruclip:company:co-1:comment:comment-10', value: JSON.stringify({ ...comment, id: 'comment-10' }) },
+              { key: 'ruclip:company:co-1:comment:comment-1', value: JSON.stringify(comment) },
+            ],
+          }
+        : { results: [] },
+  });
+  assert.deepEqual(await recallComment('co-1', 'goal-1', 'issue-1', 'comment-1', config), comment);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.args.query, 'ruclip:company:co-1:comment:comment-1');
+});
+
+test('recallComment falls back to the episodic tier, and returns null when neither tier has it', async () => {
+  const comment: Comment = { id: 'comment-1', issueId: 'issue-1', authorId: 'om-1', body: 'hi', createdAt: now };
+  const { config } = mockBridge({
+    'agentdb_hierarchical-recall': (args) =>
+      args.tier === 'episodic'
+        ? { results: [{ key: 'ruclip:company:co-1:comment:comment-1', value: JSON.stringify(comment) }] }
+        : { results: [] },
+  });
+  assert.deepEqual(await recallComment('co-1', 'goal-1', 'issue-1', 'comment-1', config), comment);
+  const empty = mockBridge({ 'agentdb_hierarchical-recall': () => ({ results: [] }) });
+  assert.equal(await recallComment('co-1', 'goal-1', 'issue-1', 'missing', empty.config), null);
 });
 
 test('persistComment rejects an invalid comment before any bridge call', async () => {
