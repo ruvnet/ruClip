@@ -498,3 +498,14 @@ test('v2: a symbol key on purpose counts as an unknown key and is refused', asyn
     (err: unknown) => err instanceof ActorIdentityVerificationError && /requires purpose/.test((err as Error).message),
   );
 });
+
+test('v2: a field inherited from the prototype (not an own data property) is refused', async () => {
+  const config = bridgeFor(human());
+  const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE });
+  const { audience, ...own } = att;
+  const presented = Object.assign(Object.create({ audience }), own) as typeof att;
+  await assert.rejects(
+    () => verifyHumanIdentityAttestation(presented, testAdmittedAttesterKeys, config, BOTH),
+    (err: unknown) => err instanceof ActorIdentityVerificationError && /own data property/.test((err as Error).message),
+  );
+});
