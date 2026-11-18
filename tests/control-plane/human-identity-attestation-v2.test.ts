@@ -458,3 +458,43 @@ test('v2: an empty assurance is refused even when an attester signed it', async 
     (err: unknown) => err instanceof ActorIdentityVerificationError && /assurance/.test((err as Error).message),
   );
 });
+
+test('v2: an accessor that answers differently per read is refused (getter probe on purpose.action)', async () => {
+  const config = bridgeFor(human());
+  const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE });
+  let reads = 0;
+  const purpose = { ...PURPOSE };
+  Object.defineProperty(purpose, 'action', { enumerable: true, get: () => (++reads <= 3 ? 'approve' : 'heartbeat.create') });
+  await assert.rejects(
+    () => verifyHumanIdentityAttestation({ ...att, purpose }, testAdmittedAttesterKeys, config, BOTH),
+    (err: unknown) => err instanceof ActorIdentityVerificationError && /accessor/.test((err as Error).message),
+  );
+});
+
+test('v2: accessors on top-level audience, version or assurance keys are refused', async () => {
+  for (const build of [
+    (a: Record<string, unknown>) => Object.defineProperty(a, 'audience', { enumerable: true, get: () => AUDIENCE }),
+    (a: Record<string, unknown>) => Object.defineProperty(a, 'version', { enumerable: true, get: () => 2 }),
+    (a: Record<string, unknown>) => {
+      a.assurance = Object.defineProperty({}, 'tier', { enumerable: true, get: () => 'edit' });
+      return a;
+    },
+  ]) {
+    const config = bridgeFor(human());
+    const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE, assurance: { tier: 'edit' } });
+    const presented = build({ ...att }) as unknown as typeof att;
+    await assert.rejects(
+      () => verifyHumanIdentityAttestation(presented, testAdmittedAttesterKeys, config, BOTH),
+      (err: unknown) => err instanceof ActorIdentityVerificationError && /accessor/.test((err as Error).message),
+    );
+  }
+});
+
+test('v2: a symbol key on purpose counts as an unknown key and is refused', async () => {
+  const config = bridgeFor(human());
+  const att = await humanAttestationV2For(human(), { audience: AUDIENCE, purpose: PURPOSE });
+  await assert.rejects(
+    () => verifyHumanIdentityAttestation({ ...att, purpose: { ...PURPOSE, [Symbol('x')]: 1 } }, testAdmittedAttesterKeys, config, BOTH),
+    (err: unknown) => err instanceof ActorIdentityVerificationError && /requires purpose/.test((err as Error).message),
+  );
+});

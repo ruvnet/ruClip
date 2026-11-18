@@ -572,6 +572,11 @@ Rules:
    verification are the objects reconstructed for the signed frame, never
    the presented ones, so a key added after signing is never reported as
    verified (and is refused anyway).
+5c. **One read, data properties only.** Verification first copies the
+   presented attestation into a frozen snapshot and refuses any accessor
+   (getter) on the top-level fields or inside `purpose` and `assurance`.
+   Every later step reads the snapshot, so a field cannot answer one value
+   to the checks and another to the caller. Symbol keys count as unknown keys.
 5b. **Base fields and time window (v1 and v2).** `humanIdentityRef`,
    `issuedAt`, `expiresAt`, `signature` and `attesterPublicKeyDerHex` must
    be non-empty bounded strings, because null, undefined and NaN canonicalise

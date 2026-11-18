@@ -169,7 +169,60 @@ function hasOnlyKeys(value: unknown, allowed: readonly string[]): value is Recor
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
   if (proto !== Object.prototype && proto !== null) return false;
-  return Reflect.ownKeys(value).every((key) => typeof key === 'string' && allowed.includes(key));
+  return Reflect.ownKeys(value).every((key) => typeof key === 'string' && allowed.includes(key) && isDataProperty(value, key));
+}
+
+function isDataProperty(value: object, key: PropertyKey): boolean {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor !== undefined && 'value' in descriptor;
+}
+
+const TOP_LEVEL_KEYS = [
+  'orgMemberId', 'companyId', 'humanIdentityRef', 'issuedAt', 'expiresAt', 'nonce', 'signature',
+  'attesterPublicKeyDerHex', 'version', 'audience', 'purpose', 'assurance',
+] as const;
+
+/** Copies one nested object's own data properties (symbol keys included, so the shape check still sees them). */
+function snapshotNested(value: unknown, field: string): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  const proto = Object.getPrototypeOf(value);
+  if (Array.isArray(value) || (proto !== Object.prototype && proto !== null)) {
+    throw new ActorIdentityVerificationError(`HumanIdentityAttestation ${field} must be a plain object`);
+  }
+  const copy: Record<PropertyKey, unknown> = {};
+  for (const key of Reflect.ownKeys(value)) {
+    if (!isDataProperty(value, key)) {
+      throw new ActorIdentityVerificationError(`HumanIdentityAttestation ${field} must hold data properties only (no accessors)`);
+    }
+    copy[key as string] = (value as Record<PropertyKey, unknown>)[key as string];
+  }
+  return Object.freeze(copy);
+}
+
+/**
+ * The single read of presenter-supplied data. Every later step (shape, expectations, frame, nonce,
+ * return value) reads this frozen snapshot, so an accessor cannot answer differently per read.
+ * Accessor properties are refused outright.
+ */
+function snapshotAttestation(presented: HumanIdentityAttestation): HumanIdentityAttestation {
+  if (presented === null || typeof presented !== 'object') {
+    throw new ActorIdentityVerificationError('HumanIdentityAttestation must be an object');
+  }
+  const copy: Record<string, unknown> = {};
+  for (const key of TOP_LEVEL_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(presented, key)) {
+      if (key in presented) {
+        throw new ActorIdentityVerificationError(`HumanIdentityAttestation ${key} must be an own data property`);
+      }
+      continue;
+    }
+    if (!isDataProperty(presented, key)) {
+      throw new ActorIdentityVerificationError(`HumanIdentityAttestation ${key} must be a data property (no accessors)`);
+    }
+    const value = (presented as unknown as Record<string, unknown>)[key];
+    copy[key] = key === 'purpose' || key === 'assurance' ? snapshotNested(value, key) : value;
+  }
+  return Object.freeze(copy) as unknown as HumanIdentityAttestation;
 }
 
 /**
@@ -480,11 +533,14 @@ export interface VerifiedHumanIdentityAttestation {
 }
 
 export async function verifyHumanIdentityAttestation(
-  attestation: HumanIdentityAttestation,
+  presented: HumanIdentityAttestation,
   admittedAttesterKeys: ReadonlySet<string>,
   config?: AgentDbAdapterConfig,
   verifyOptions?: AttestationVerifyOptions,
 ): Promise<VerifiedHumanIdentityAttestation> {
+  const attestation = snapshotAttestation(presented);
+  // Read once from the snapshot; the frame and the return value both use exactly these fields.
+  const signed = attestation.version === 2 ? signedV2Fields(attestation) : undefined;
   assertSafeId(attestation.orgMemberId, 'attestation.orgMemberId');
   assertSafeId(attestation.companyId, 'attestation.companyId');
   assertSafeId(attestation.nonce, 'attestation.nonce');
@@ -503,7 +559,7 @@ export async function verifyHumanIdentityAttestation(
   }
 
   const radioMoe = await loadRadioMoeRequired();
-  const frame = { ...attestationFrame(attestation), signature: attestation.signature };
+  const frame = { ...attestationFrame({ ...attestation, ...(signed ?? {}) }), signature: attestation.signature };
   if (!radioMoe.verifyFrame(frame, attestation.attesterPublicKeyDerHex)) {
     throw new ActorIdentityVerificationError(
       `HumanIdentityAttestation for '${attestation.orgMemberId}' failed signature verification`,
@@ -531,9 +587,8 @@ export async function verifyHumanIdentityAttestation(
     companyId: attestation.companyId,
     humanIdentityRef: attestation.humanIdentityRef,
   };
-  if (attestation.version === 2) {
+  if (signed) {
     // The reconstructed, signed objects — never the presenter's, which could carry unsigned keys.
-    const signed = signedV2Fields(attestation);
     verified.version = 2;
     verified.audience = signed.audience;
     verified.purpose = signed.purpose;
