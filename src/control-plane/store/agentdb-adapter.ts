@@ -1001,6 +1001,23 @@ export async function persistComment(
   await storeAtTier(commentKey(companyId, goalId, comment.issueId, comment.id), comment, issueTier, config);
 }
 
+/**
+ * Exact-key read of one Comment. A comment is stored at its parent issue's tier, so, like recallIssue,
+ * this looks in the working tier first and falls back to episodic. Returns null when neither holds it.
+ */
+export async function recallComment(
+  companyId: string,
+  goalId: string,
+  issueId: string,
+  commentId: string,
+  config?: AgentDbAdapterConfig,
+): Promise<Comment | null> {
+  const key = commentKey(companyId, goalId, issueId, commentId);
+  return (
+    (await recallByKey<Comment>(key, 'working', config)) ?? (await recallByKey<Comment>(key, 'episodic', config))
+  );
+}
+
 // --- HeartbeatSchedule (HEARTBEATS-AND-COMMS.md §1, §6) --------------------
 
 /** HEARTBEATS-AND-COMMS.md §1 §2.1-style tier rule: working while active/paused, episodic once cancelled. */
