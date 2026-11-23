@@ -203,6 +203,25 @@ test('gcp-oidc auth: a failed metadata fetch throws AgentDbBridgeError and sends
   assert.equal(calls.length, 0);
 });
 
+test('gcp-oidc auth: two concurrent callTool calls on a cold token cache share one metadata-server fetch, not two', async () => {
+  const { metadataCalls, fetchImpl } = mockBridgeWithMetadata(
+    { 'agentdb_hierarchical-store': () => ({ ok: true }) },
+    'fake.identity.token',
+  );
+  const config: AgentDbAdapterConfig = { fetchImpl, baseUrl: 'http://mock', auth: 'gcp-oidc' };
+
+  // Both calls start before either has resolved a token — the cache is
+  // cold for both. A correct implementation de-duplicates the in-flight
+  // metadata-server fetch the same way bridge-client.ts's ensureHandshake
+  // already de-duplicates concurrent first handshakes.
+  await Promise.all([
+    callTool('agentdb_hierarchical-store', { key: 'k1' }, config),
+    callTool('agentdb_hierarchical-store', { key: 'k2' }, config),
+  ]);
+
+  assert.equal(metadataCalls.length, 1, `expected exactly 1 metadata-server fetch for 2 concurrent cold-cache callers, observed ${metadataCalls.length}`);
+});
+
 test('auth off (the default): no metadata call is made and no Authorization header is sent', async () => {
   const { rpcLog, metadataCalls, fetchImpl } = mockBridgeWithMetadata(
     { 'agentdb_hierarchical-store': () => ({ ok: true }) },
