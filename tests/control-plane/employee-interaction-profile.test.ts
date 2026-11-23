@@ -267,6 +267,74 @@ test('recomputeInteractionSignals ignores submit/revise transitions as latency s
   assert.equal(updated?.medianDecisionLatencySeconds, 35); // median(10, 60)
 });
 
+test('recomputeInteractionSignals only groups+sorts transitions for the issue(s) orgMemberId actually decided on, not every issue in the company (Dream Cycle 2026-10-23, memory/latency)', async () => {
+  // 50 "noise" issues, each with a submit + approve by two OTHER actors —
+  // om-approver never appears on any of them, so they can never contribute
+  // a latency sample. Before tonight's change, recomputeInteractionSignals
+  // still grouped-and-sorted every one of these 50 issues' transitions
+  // (Array.prototype.sort called once per issue, 51 times total here)
+  // purely to then discover, on the final pass, that none of them belong
+  // to om-approver. This is the discriminating signal: a company-wide,
+  // company-history-proportional cost paid on every single approve/reject
+  // decision by a consenting member, regardless of how few issues that
+  // member actually touches.
+  const noise: ApprovalTransition[] = [];
+  for (let i = 0; i < 50; i++) {
+    noise.push(
+      baseTransition({
+        id: `noise-submit-${i}`, issueId: `noise-${i}`, action: 'submit', fromState: 'draft', toState: 'pending',
+        actorId: 'om-other-submitter', createdAt: '2026-09-01T08:00:00.000Z',
+      }),
+    );
+    noise.push(
+      baseTransition({
+        id: `noise-approve-${i}`, issueId: `noise-${i}`, action: 'approve', fromState: 'pending', toState: 'approved',
+        actorId: 'om-other-approver', createdAt: '2026-09-01T08:01:00.000Z',
+      }),
+    );
+  }
+  const submit1 = baseTransition({
+    id: 't-submit-1', issueId: 'issue-1', action: 'submit', fromState: 'draft', toState: 'pending',
+    actorId: 'om-submitter', createdAt: '2026-09-01T10:00:00.000Z',
+  });
+  const approve1 = baseTransition({
+    id: 't-approve-1', issueId: 'issue-1', action: 'approve', fromState: 'pending', toState: 'approved',
+    actorId: 'om-approver', createdAt: '2026-09-01T10:01:40.000Z', // +100s
+  });
+
+  const profile = baseProfile({ consentedSignalTypes: ['internal-timing'] });
+  const { config } = mockBridge({
+    'memory_retrieve': (args) => (args.key === profileKey('co-1', 'om-approver') ? { found: true, value: profile } : { found: false }),
+    'memory_store': () => ({ success: true }),
+    'agentdb_hierarchical-recall': (args) =>
+      args.tier === 'working'
+        ? { results: [...noise, submit1, approve1].map((t) => ({ value: JSON.stringify(t) })) }
+        : { results: [] },
+  });
+
+  // node:test's mock.method refuses an Array instance (even Array.prototype)
+  // as its target object (ERR_INVALID_ARG_TYPE), so this is a plain,
+  // manually-restored monkeypatch rather than the MockTracker API.
+  const originalSort = Array.prototype.sort;
+  let sortCalls = 0;
+  Array.prototype.sort = function <T>(this: T[], ...args: [((a: T, b: T) => number)?]): T[] {
+    sortCalls += 1;
+    return originalSort.apply(this, args);
+  };
+  try {
+    const updated = await recomputeInteractionSignals('co-1', 'om-approver', config);
+    assert.equal(updated?.sampleCount, 1);
+    assert.equal(updated?.medianDecisionLatencySeconds, 100);
+    assert.ok(
+      sortCalls <= 2,
+      `expected grouping/sorting scoped to the 1 issue om-approver decided on, not all 51 issues in the ` +
+        `company — observed ${sortCalls} Array.prototype.sort call(s)`,
+    );
+  } finally {
+    Array.prototype.sort = originalSort;
+  }
+});
+
 // --- applyApprovalTransition: deps.interactionLearning wiring ---------------
 
 test('applyApprovalTransition with deps.interactionLearning omitted never touches the EmployeeInteractionProfile memory_store/memory_retrieve calls — existing behavior unchanged', async () => {

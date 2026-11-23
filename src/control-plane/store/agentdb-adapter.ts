@@ -735,12 +735,18 @@ export async function listIssuesForGoal(
   assertSafeId(companyId, 'companyId');
   assertSafeId(goalId, 'goalId');
   const issues: Issue[] = [];
-  for (const tier of ['working', 'episodic'] as const) {
-    const result = await callTool<{ results?: Array<{ value?: string }> }>(
-      'agentdb_hierarchical-recall',
-      { query: `ruclip:company:${companyId}:goal:${goalId} issue`, tier, topK: 200 },
-      config,
-    );
+  // The two tiers are independent reads merged client-side (order doesn't matter), so they
+  // fan out concurrently instead of paying their round-trips back to back.
+  const tierResults = await Promise.all(
+    (['working', 'episodic'] as const).map((tier) =>
+      callTool<{ results?: Array<{ value?: string }> }>(
+        'agentdb_hierarchical-recall',
+        { query: `ruclip:company:${companyId}:goal:${goalId} issue`, tier, topK: 200 },
+        config,
+      ),
+    ),
+  );
+  for (const result of tierResults) {
     for (const r of result.results ?? []) {
       if (typeof r.value !== 'string') continue;
       try {
@@ -797,12 +803,18 @@ export async function listApprovalTransitionsForCompany(
 ): Promise<ApprovalTransition[]> {
   assertSafeId(companyId, 'companyId');
   const transitions: ApprovalTransition[] = [];
-  for (const tier of ['working', 'episodic'] as const) {
-    const result = await callTool<{ results?: Array<{ key?: string; value?: string }> }>(
-      'agentdb_hierarchical-recall',
-      { query: companyKey(companyId), tier, topK: 500 },
-      config,
-    );
+  // Same independent-tiers-merged-client-side shape as listIssuesForGoal above: fan out
+  // concurrently rather than scanning working then episodic back to back.
+  const tierResults = await Promise.all(
+    (['working', 'episodic'] as const).map((tier) =>
+      callTool<{ results?: Array<{ key?: string; value?: string }> }>(
+        'agentdb_hierarchical-recall',
+        { query: companyKey(companyId), tier, topK: 500 },
+        config,
+      ),
+    ),
+  );
+  for (const result of tierResults) {
     for (const r of result.results ?? []) {
       // A similarity query with extra words returned nothing on a real bridge;
       // the bare company prefix returns the company's records, filtered by key.
@@ -1067,11 +1079,24 @@ function tierForHeartbeatStatus(status: HeartbeatStatus): MemoryTier {
  * nothing downstream re-verifies the same credential), so no
  * nonce-double-consumption concern applies here.
  */
+/**
+ * Caller-supplied target entity, when the caller has already recalled it for
+ * its own gating logic (e.g. `fireHeartbeat`'s budget gates) and knows it to
+ * be non-null for this exact `schedule.target` — lets `persistHeartbeatSchedule`
+ * skip its own `recallIssue`/`recallGoal` round trip and validate against the
+ * already-fetched object instead. Optional and narrowly typed by `kind` so a
+ * mismatched (issue target / goal entity) pairing is a compile error, not a
+ * runtime one. Every existing caller that omits it gets the prior
+ * fetch-and-validate behavior unchanged.
+ */
+export type PrefetchedHeartbeatTarget = { kind: 'issue'; issue: Issue } | { kind: 'goal'; goal: Goal };
+
 export async function persistHeartbeatSchedule(
   schedule: HeartbeatSchedule,
   authorization?: ActorAuthorization,
   previousStatus?: HeartbeatStatus,
   config?: AgentDbAdapterConfig,
+  prefetchedTarget?: PrefetchedHeartbeatTarget,
 ): Promise<void> {
   assertValidHeartbeatSchedule(schedule);
 
@@ -1116,7 +1141,10 @@ export async function persistHeartbeatSchedule(
 
   let targetNodeId: string;
   if (schedule.target.kind === 'issue') {
-    const issue = await recallIssue(schedule.companyId, schedule.target.goalId, schedule.target.issueId, config);
+    const issue =
+      prefetchedTarget?.kind === 'issue'
+        ? prefetchedTarget.issue
+        : await recallIssue(schedule.companyId, schedule.target.goalId, schedule.target.issueId, config);
     if (!issue) {
       throw new ApprovalGateViolationError(
         `HeartbeatSchedule '${schedule.id}' targets issue '${schedule.target.issueId}' which does not exist`,
@@ -1133,7 +1161,10 @@ export async function persistHeartbeatSchedule(
     }
     targetNodeId = entityNodeId('issue', schedule.target.issueId);
   } else {
-    const goal = await recallGoal(schedule.companyId, schedule.target.goalId, config);
+    const goal =
+      prefetchedTarget?.kind === 'goal'
+        ? prefetchedTarget.goal
+        : await recallGoal(schedule.companyId, schedule.target.goalId, config);
     if (!goal) {
       throw new ApprovalGateViolationError(
         `HeartbeatSchedule '${schedule.id}' targets goal '${schedule.target.goalId}' which does not exist`,
@@ -1228,12 +1259,19 @@ export async function listHeartbeatsForCompany(
 ): Promise<HeartbeatSchedule[]> {
   assertSafeId(companyId, 'companyId');
   const schedules: HeartbeatSchedule[] = [];
-  for (const tier of ['working', 'episodic'] as const) {
-    const result = await callTool<{ results?: Array<{ value?: string }> }>(
-      'agentdb_hierarchical-recall',
-      { query: `ruclip:company:${companyId} heartbeat`, tier, topK: 100 },
-      config,
-    );
+  // Same independent-tiers-merged-client-side shape as listIssuesForGoal/
+  // listApprovalTransitionsForCompany: fan out concurrently rather than scanning
+  // working then episodic back to back.
+  const tierResults = await Promise.all(
+    (['working', 'episodic'] as const).map((tier) =>
+      callTool<{ results?: Array<{ value?: string }> }>(
+        'agentdb_hierarchical-recall',
+        { query: `ruclip:company:${companyId} heartbeat`, tier, topK: 100 },
+        config,
+      ),
+    ),
+  );
+  for (const result of tierResults) {
     for (const r of result.results ?? []) {
       if (typeof r.value !== 'string') continue;
       try {
