@@ -14,7 +14,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm install --no-audit --no-fund || true
+      - run: npm ci --no-audit --no-fund
       - run: npm run build
       - run: npm test
       # ruclip-metaharness (docs/design/RUCLIP-METAHARNESS.md §5): advisory
