@@ -80,15 +80,17 @@ LOCAL (published as part of the issue body below; no standalone `gh gist create`
 ## Witness
 
 - Session commit: `ab588b32db00b536436139b1d8e5094cd7a6eb70`
-- Report sha256: `72778da4e6689ed2bfbd294337edab6db92c2c4d2845d63e2e6e69752720c1f6`
-- Witness stamp: `db5277ba56eb92aa77c58a7b156a8cb2f7afc323363f5759a8989f444f23ee0c`
+- Report sha256 (of this report **with the `## Witness` section removed**, since the stamp cannot hash itself): `ead3cf744b483215fdbc2f3585b843a11d18d0fb640609c4cf0b4e1eb78c35e2`
+- Witness stamp: `9e7a8462819e70444f03a110c94de11696ff4b71011afe0e8e4b9e375bb4f305`
+
+(Correction recorded here, not silently fixed: an earlier draft of this stamp was computed on this file *before* this Witness section was filled in, so it didn't match the file actually committed — a real self-check failure, caught before publication by re-hashing the committed file and finding a mismatch. The values above are computed correctly, as documented in the verifier procedure below, and are the only ones that appear in the committed report, the GitHub issue, and the GitHub PR.)
 
 **Verifier procedure (reproducible by anyone):**
-1. `git clone https://github.com/ruvnet/ruClip.git && cd ruClip && git checkout ab588b32db00b536436139b1d8e5094cd7a6eb70`
-2. Save this gist's body to a file, e.g. `report.md`.
-3. `sha256sum report.md` → must equal the Report sha256 above.
-4. `printf '%s%s' "<report-sha256>" "ab588b32db00b536436139b1d8e5094cd7a6eb70" | sha256sum` → must equal the Witness stamp above.
-5. On branch `dream/2026-11-24-developer-experience`: `npm ci && npm run build && npm test` → expect 362/362 pass; diff against `ab588b3` should be exactly `package.json` (+3/-0) and `.npmrc` (new, 1 line) plus `package-lock.json`'s mirrored `engines` block, `docs/dream-cycle/LEDGER.md`, and this report's committed copy.
+1. `git clone https://github.com/ruvnet/ruClip.git && cd ruClip && git checkout ab588b32db00b536436139b1d8e5094cd7a6eb70` for the baseline, or `git fetch origin dream/2026-11-24-developer-experience && git checkout dream/2026-11-24-developer-experience` for the candidate.
+2. From the candidate branch: `awk '/^## Witness$/{skip=1} /^## Recommendation$/{skip=0} !skip' docs/dream-cycle/2026-11-24-developer-experience-report.md | sha256sum` → must equal the Report sha256 above.
+3. `printf '%s%s' "ead3cf744b483215fdbc2f3585b843a11d18d0fb640609c4cf0b4e1eb78c35e2" "ab588b32db00b536436139b1d8e5094cd7a6eb70" | sha256sum` → must equal the Witness stamp above.
+4. On branch `dream/2026-11-24-developer-experience`: `npm ci && npm run build && npm test` → expect 362/362 pass; diff against `ab588b3` should be exactly `package.json` (+3/-0), `.npmrc` (new, 1 line), `package-lock.json`'s mirrored `engines` block, `docs/dream-cycle/LEDGER.md`'s appended row, and this report's committed copy.
+5. Independently reproduced in this session by a separate adversarial-critic agent (not this report's author): confirmed the diff matches exactly, reproduced 362/362 on the real branch content, and additionally confirmed `npm ci` (not just `npm install`) also refuses under the negative-path `engines.node:">=99.0.0"` probe — verdict `CRITIC_CLEAR`.
 
 ## Recommendation
 
